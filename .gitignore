@@ -205,3 +205,23 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# =============================================================================
+# Project-specific exclusions
+# =============================================================================
+
+# Data files (large JSONL files from JV-Link)
+data/
+
+# 32bit Python virtual environment (for JV-Link COM)
+.venv32/
+
+# Debug/temporary scripts
+debug_*.py
+
+# IDE settings
+.idea/
+.vscode/
+
+# Local configuration
+*.local.env
