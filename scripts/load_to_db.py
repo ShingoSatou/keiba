@@ -49,13 +49,28 @@ def load_jsonl(file_path: Path):
 
 
 def insert_raw_record(db: Database, dataspec: str, record: dict) -> None:
-    """raw.jv_rawにレコードを挿入"""
+    """raw.jv_rawにレコードを挿入（単一レコード版）"""
     sql = """
         INSERT INTO raw.jv_raw (dataspec, rec_id, filename, payload)
         VALUES (%s, %s, %s, %s)
         ON CONFLICT DO NOTHING
     """
     db.execute(sql, (dataspec, record["rec_id"], record["filename"], record["payload"]))
+
+
+def insert_raw_records_batch(db: Database, dataspec: str, records: list[dict]) -> int:
+    """raw.jv_rawにレコードをバッチ挿入（高速版）"""
+    if not records:
+        return 0
+    sql = """
+        INSERT INTO raw.jv_raw (dataspec, rec_id, filename, payload)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT DO NOTHING
+    """
+    values = [(dataspec, r["rec_id"], r["filename"], r["payload"]) for r in records]
+    cursor = db.connect().cursor()
+    cursor.executemany(sql, values)
+    return len(records)
 
 
 def upsert_race(db: Database, race: RaceRecord) -> None:
@@ -435,6 +450,7 @@ def process_file(db: Database, file_path: Path) -> dict[str, int]:
     後続のSE/HR/O1レコードでのFK違反（race_id参照エラー）を防ぐ。
     """
     stats = {"raw": 0, "race": 0, "runner": 0, "payout": 0, "odds": 0, "horse": 0, "errors": 0}
+    BATCH_SIZE = 1000
 
     # マスタデータをメモリにロード (FK検証用)
     master_jockeys, master_trainers = prepare_master_data_cache(db)
@@ -442,11 +458,13 @@ def process_file(db: Database, file_path: Path) -> dict[str, int]:
     # ファイル名からdataspecを推定
     dataspec = file_path.stem.split("_")[0]
 
-    # Pass 1: Race (RA) のみ処理
+    # Pass 1: Race (RA) のみ処理 + rawバッチ挿入
     logger.info("  Pass 1: Processing Race records...")
+    raw_batch = []
     for record in load_jsonl(file_path):
         try:
-            insert_raw_record(db, dataspec, record)
+            # rawレコードをバッチに追加
+            raw_batch.append(record)
             stats["raw"] += 1
 
             rec_id = record["rec_id"]
@@ -457,18 +475,25 @@ def process_file(db: Database, file_path: Path) -> dict[str, int]:
                 upsert_race(db, race)
                 stats["race"] += 1
 
+            # バッチサイズに達したらINSERT
+            if len(raw_batch) >= BATCH_SIZE:
+                insert_raw_records_batch(db, dataspec, raw_batch)
+                raw_batch = []
+                db.connect().commit()
+                logger.info(f"    {stats['raw']:,} 件処理...")
+
         except Exception:
             db.connect().rollback()
+            raw_batch = []  # バッチをクリア
             if stats["errors"] < 5:
-                # logger.warning(f"Pass 1 Error [{rec_id}]: {e}")
-                pass  # Pass 2で詳細を出すのでここではスキップでもよいが、Raceが入らないと困る
-            # Pass 2と重複カウントしないよう、Pass 1エラーはカウントしない
-            # stats["errors"] += 1
+                pass
+            stats["errors"] += 1
 
-        if stats["raw"] % 1000 == 0:
-            db.connect().commit()
-
+    # 残りのバッチを処理
+    if raw_batch:
+        insert_raw_records_batch(db, dataspec, raw_batch)
     db.connect().commit()  # Pass 1完了コミット
+    logger.info(f"  Pass 1 完了: {stats['raw']:,} raw, {stats['race']:,} race")
 
     # Pass 2: Skip RA, process others
     logger.info("  Pass 2: Processing other records...")
