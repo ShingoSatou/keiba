@@ -225,3 +225,9 @@ debug_*.py
 
 # Local configuration
 *.local.env
+
+# Trained models (large pickle files)
+models/
+
+# W&B logs
+wandb/
