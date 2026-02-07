@@ -68,15 +68,35 @@ RA_YEAR_START = 11  # 仕様書: 12
 
 ## コマンド一覧
 
+### データ取得 (32bit Python)
 ```powershell
-# データ取得 (32bit Python)
+# 2年刻みで取得 (推奨)
 .\.venv32\Scripts\python.exe scripts/extract_jvlink.py \
     --from-date 20160101 --to-date 20171231 --option 4
 
-# DBロード
-uv run python scripts/load_to_db.py --input data/RACE_*.jsonl
+# マスタデータ (DIFF) 取得
+.\.venv32\Scripts\python.exe scripts/extract_jvlink.py \
+    --dataspec DIFF --from-date 20160101 --option 4
+```
 
-# テスト
+### DBロード (64bit Python)
+```powershell
+# 全ファイルを一括ロード (推奨)
+uv run python scripts/load_to_db.py --input-dir data/
+
+# ワイルドカードで指定
+uv run python scripts/load_to_db.py --input "data/RACE_*.jsonl"
+uv run python scripts/load_to_db.py --input "data/DIFF_*.jsonl"
+
+# 単一ファイル指定
+uv run python scripts/load_to_db.py --input data/RACE_20260207_123456.jsonl
+```
+
+> **Note**: `--input-dir` はアルファベット順で処理されるため、  
+> DIFF_* → RACE_* の順で自動的にマスタが先にロードされます。
+
+### テスト
+```powershell
 uv run pytest -q
 ```
 

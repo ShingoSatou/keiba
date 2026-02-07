@@ -549,8 +549,8 @@ def main():
     parser = argparse.ArgumentParser(description="JSONL → PostgreSQL ロード")
     parser.add_argument(
         "--input",
-        type=Path,
-        help="入力JSONLファイル",
+        type=str,
+        help="入力JSONLファイル (ワイルドカード対応: data/RACE_*.jsonl)",
     )
     parser.add_argument(
         "--input-dir",
@@ -564,7 +564,15 @@ def main():
 
     files = []
     if args.input:
-        files.append(args.input)
+        # ワイルドカードサポート
+        input_path = Path(args.input)
+        if "*" in args.input:
+            # glob展開
+            parent = input_path.parent if input_path.parent.exists() else Path(".")
+            pattern = input_path.name
+            files.extend(sorted(parent.glob(pattern)))
+        else:
+            files.append(input_path)
     if args.input_dir:
         files.extend(sorted(args.input_dir.glob("*.jsonl")))
 
