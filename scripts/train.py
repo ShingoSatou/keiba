@@ -325,6 +325,70 @@ class LGBMClassifierWrapper:
 
 
 # =============================================================================
+# データ分割
+# =============================================================================
+
+
+def _split_by_race_id(
+    df: pd.DataFrame,
+    X: pd.DataFrame,
+    y: pd.Series,
+    test_size: float = 0.2,
+    es_val_size: float = 0.1,
+) -> tuple:
+    """
+    race_id 境界で時系列分割 (Train / ES-Val / Test)
+
+    同一レースが複数のセットに跨がらないよう、レース単位で分割する。
+
+    Args:
+        test_size: テストデータの割合 (0.0 の場合は本番学習モード)
+        es_val_size: Early Stopping 用検証データの割合
+
+    Returns:
+        (X_train, y_train, X_es_val, y_es_val, X_test, y_test)
+    """
+    if "race_id" not in df.columns or "race_date" not in df.columns:
+        raise ValueError("race_id と race_date が必要です")
+
+    # レース単位でソート
+    unique_races = df[["race_id", "race_date"]].drop_duplicates().sort_values("race_date")
+    n_races = len(unique_races)
+
+    # 割合計算
+    # test_size が 0.0 (本番モード) の場合も意図通り動作する
+    n_test = int(n_races * test_size)
+    n_es = int(n_races * es_val_size)
+    n_train = n_races - n_test - n_es
+
+    if n_train <= 0:
+        raise ValueError("学習データが少なすぎます")
+
+    # 分割インデックス
+    train_end = n_train
+    es_val_end = n_train + n_es
+
+    # race_id のセットを作成
+    train_races = set(unique_races.iloc[:train_end]["race_id"])
+    es_val_races = set(unique_races.iloc[train_end:es_val_end]["race_id"])
+    test_races = set(unique_races.iloc[es_val_end:]["race_id"])
+
+    # 行インデックスにマップ
+    train_idx = df[df["race_id"].isin(train_races)].index
+    es_val_idx = df[df["race_id"].isin(es_val_races)].index
+    test_idx = df[df["race_id"].isin(test_races)].index
+
+    return (
+        X.loc[train_idx],
+        y.loc[train_idx],
+        X.loc[es_val_idx],
+        y.loc[es_val_idx],
+        X.loc[test_idx],
+        y.loc[test_idx],
+    )
+
+
+# =============================================================================
 # 学習
 # =============================================================================
 
@@ -361,29 +425,32 @@ def train_model(
         },
     )
 
-    # 時系列分割: 日付でソートして後半をテスト
-    if "race_date" in df.columns:
-        df_sorted = df.sort_values("race_date")
-        split_idx = int(len(df_sorted) * (1 - test_size))
-        train_idx = df_sorted.index[:split_idx]
-        test_idx = df_sorted.index[split_idx:]
-        X_train, X_test = X.loc[train_idx], X.loc[test_idx]
-        y_train, y_test = y.loc[train_idx], y.loc[test_idx]
-        logger.info(f"時系列分割: 学習={len(X_train)}, テスト={len(X_test)}")
+    # 時系列分割: race_id境界で Train/ES-Val/Test に分割
+    if "race_id" in df.columns and "race_date" in df.columns:
+        # test_size が 0.0 なら本番モード (Testなし)
+        X_train, y_train, X_es_val, y_es_val, X_test, y_test = _split_by_race_id(
+            df, X, y, test_size=test_size
+        )
+        logger.info(f"分割: Train={len(X_train)}, ES-Val={len(X_es_val)}, Test={len(X_test)}")
     else:
+        # race_id がない場合はフォールバック（レガシー）
+        logger.warning("race_id がないため、従来の2分割を使用 (リークあり)")
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=test_size, random_state=42
         )
+        # ES-Val は Test と同じにする (簡易的)
+        X_es_val, y_es_val = X_test, y_test
 
     log_to_wandb(
         wandb_run,
         {
             "data/n_train": len(X_train),
+            "data/n_es_val": len(X_es_val),
             "data/n_test": len(X_test),
         },
     )
 
-    # LightGBM学習 (early stopping 付き)
+    # LightGBM学習 (early stopping は ES-Val のみ)
     extra_params = GPU_LGB_PARAMS if use_gpu else {}
     if use_gpu:
         logger.info("GPUモードで学習します")
@@ -391,51 +458,38 @@ def train_model(
     lgb_model.fit(
         X_train,
         y_train,
-        X_val=X_test,
-        y_val=y_test,
+        X_val=X_es_val,
+        y_val=y_es_val,
         early_stopping_rounds=50,
         wandb_run=wandb_run,
     )
     logger.info(f"Best iteration: {lgb_model.best_iteration}")
 
     # テストデータでの評価
-    y_pred_prob = lgb_model.predict(X_test)
-    logloss = log_loss(y_test, y_pred_prob)
-    auc = roc_auc_score(y_test, y_pred_prob)
-    logger.info(f"テスト Logloss: {logloss:.4f}, AUC: {auc:.4f}")
+    if len(X_test) > 0:
+        y_pred_test_raw = lgb_model.predict_proba(X_test)[:, 1]
+        logloss_raw = log_loss(y_test, y_pred_test_raw)
+        auc = roc_auc_score(y_test, y_pred_test_raw)
+        logger.info(f"テスト Logloss: {logloss_raw:.4f}, AUC: {auc:.4f}")
 
-    log_to_wandb(
-        wandb_run,
-        {
-            "test/logloss_raw": logloss,
-            "test/auc": auc,
-        },
-    )
+        # ECE の計算
+        ece = _calculate_ece(y_test, y_pred_test_raw)
+        logger.info(f"Test ECE: {ece:.4f}")
 
-    # 確率校正 (sklearn 1.6+ 互換: IsotonicRegressionを直接使用)
-    logger.info("確率校正中...")
-    from sklearn.isotonic import IsotonicRegression
+        log_to_wandb(
+            wandb_run,
+            {
+                "test/logloss": logloss_raw,
+                "test/auc": auc,
+                "test/ece": ece,
+            },
+        )
 
-    y_pred_raw = lgb_model.predict_proba(X_test)[:, 1]
-    calibrator = IsotonicRegression(out_of_bounds="clip")
-    calibrator.fit(y_pred_raw, y_test)
-
-    # 校正後の評価
-    y_pred_calibrated = calibrator.predict(y_pred_raw)
-    logloss_cal = log_loss(y_test, y_pred_calibrated)
-    logger.info(f"校正後 Logloss: {logloss_cal:.4f}")
-
-    log_to_wandb(
-        wandb_run,
-        {
-            "test/logloss_calibrated": logloss_cal,
-            "test/logloss_improvement": logloss - logloss_cal,
-        },
-    )
-
-    # 校正の確認 (予測確率 vs 実際の勝率)
-    prob_pred_list, prob_true_list = _check_calibration(y_test, y_pred_calibrated)
-    log_calibration_to_wandb(wandb_run, prob_pred_list, prob_true_list)
+        # 校正チェック (W&B記録)
+        prob_pred_list, prob_true_list = _check_calibration(y_test, y_pred_test_raw)
+        log_calibration_to_wandb(wandb_run, prob_pred_list, prob_true_list)
+    else:
+        logger.info("Testセットがないため評価をスキップします (本番学習モード)")
 
     # 特徴量重要度
     importance = pd.DataFrame(
@@ -451,7 +505,36 @@ def train_model(
 
     log_feature_importance_to_wandb(wandb_run, importance)
 
+    # 校正なし (None)
+    calibrator = None
+
     return lgb_model, calibrator, available_features
+
+
+def _calculate_ece(y_true, y_pred, n_bins=10):
+    """Expected Calibration Error を計算"""
+    from sklearn.calibration import calibration_curve
+
+    prob_true, prob_pred = calibration_curve(y_true, y_pred, n_bins=n_bins, strategy="uniform")
+
+    # ビンごとのサンプル数を計算 (簡易実装)
+    bin_boundaries = np.linspace(0, 1, n_bins + 1)
+    bin_lowers = bin_boundaries[:-1]
+    bin_uppers = bin_boundaries[1:]
+
+    ece = 0.0
+    n_total = len(y_true)
+
+    for bin_lower, bin_upper in zip(bin_lowers, bin_uppers, strict=True):
+        in_bin = (y_pred >= bin_lower) & (y_pred < bin_upper)
+        n_in_bin = np.sum(in_bin)
+
+        if n_in_bin > 0:
+            accuracy = np.mean(y_true[in_bin])
+            avg_confidence = np.mean(y_pred[in_bin])
+            ece += np.abs(accuracy - avg_confidence) * (n_in_bin / n_total)
+
+    return ece
 
 
 def _check_calibration(y_true: pd.Series, y_pred: np.ndarray) -> tuple[list, list]:
@@ -479,6 +562,7 @@ def main():
     parser.add_argument("--num-boost-round", type=int, default=500, help="ブーストラウンド数")
     parser.add_argument("--gpu", action="store_true", help="GPUを使用して学習")
     parser.add_argument("--no-wandb", action="store_true", help="W&B記録を無効化")
+    parser.add_argument("--production", action="store_true", help="本番学習モード (全データ使用)")
     args = parser.parse_args()
 
     # データ読み込み
@@ -508,10 +592,17 @@ def main():
     wandb_run = init_wandb(enabled=not args.no_wandb, config=config)
 
     try:
+        # 本番モードなら test_size=0.0
+        test_size = 0.0 if args.production else args.test_size
+
+        if args.production:
+            logger.info("=== 本番学習モード (Production Mode) ===")
+            logger.info("Testセットを作成せず、直近データまで含めて学習します")
+
         # 学習
         lgb_model, calibrator, feature_names = train_model(
             df,
-            test_size=args.test_size,
+            test_size=test_size,
             num_boost_round=args.num_boost_round,
             use_gpu=args.gpu,
             wandb_run=wandb_run,
@@ -526,9 +617,15 @@ def main():
         logger.info(f"モデル保存: {model_path}")
 
         calibrator_path = MODEL_DIR / "calibrator.pkl"
-        with open(calibrator_path, "wb") as f:
-            pickle.dump(calibrator, f)
-        logger.info(f"校正器保存: {calibrator_path}")
+        if calibrator is not None:
+            with open(calibrator_path, "wb") as f:
+                pickle.dump(calibrator, f)
+            logger.info(f"校正器保存: {calibrator_path}")
+        else:
+            # 校正器なしの場合はファイルを削除（もしあれば）
+            if calibrator_path.exists():
+                calibrator_path.unlink()
+            logger.info("校正器は保存されません (None)")
 
         # W&B にモデルをアーティファクトとして保存
         if wandb_run:
@@ -537,7 +634,8 @@ def main():
 
                 artifact = wandb.Artifact("model", type="model")
                 artifact.add_file(str(model_path))
-                artifact.add_file(str(calibrator_path))
+                if calibrator is not None and calibrator_path.exists():
+                    artifact.add_file(str(calibrator_path))
                 wandb_run.log_artifact(artifact)
             except Exception as e:
                 logger.warning(f"W&B アーティファクト保存失敗: {e}")

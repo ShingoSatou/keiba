@@ -22,6 +22,7 @@ import argparse
 import logging
 from datetime import date, timedelta
 
+import numpy as np
 import pandas as pd
 
 from app.infrastructure.database import Database
@@ -88,98 +89,83 @@ def is_similar_condition(
 
 
 # =============================================================================
-# Step 1: グループ統計更新
+# Helper Functions for Feature Engineering
+# =============================================================================
+
+
+def calculate_benchmark_stats(
+    df: pd.DataFrame,
+    group_cols: list[str],
+    span: float = 730,  # 2 years approx
+    min_periods: int = 1,
+) -> pd.DataFrame:
+    """西暦順にソートされたDFに対して、EWM統計を計算する (Shift(1)でリーク防止)"""
+    # 1. Calculate EWM Mean/Std
+    ewm_stats = (
+        df.groupby(group_cols)["time_sec"]
+        .ewm(span=span, min_periods=min_periods)
+        .agg(["mean", "std"])
+    )
+
+    # 2. Calculate Count (Expanding)
+    count_stats = df.groupby(group_cols)["time_sec"].expanding().count().rename("count")
+
+    # Merge
+    stats = pd.concat([ewm_stats, count_stats], axis=1)
+
+    # Reset index to sort by original index
+    stats = stats.reset_index(level=list(range(len(group_cols))), drop=True)
+    stats = stats.sort_index()
+
+    # Add group columns back
+    for col in group_cols:
+        stats[col] = df[col]
+
+    # Shift(1) to avoid leakage
+    stats_shifted = stats.groupby(group_cols)[["mean", "std", "count"]].shift(1)
+
+    return stats_shifted
+
+
+def apply_shrinkage(
+    fine_stats: pd.DataFrame,
+    coarse_stats: pd.DataFrame,
+    shrinkage_k: float = 20.0,
+) -> pd.DataFrame:
+    """階層型縮約 (Bayesian Shrinkage)"""
+    n = fine_stats["count"].fillna(0)
+    mu_fine = fine_stats["mean"]
+    mu_coarse = coarse_stats["mean"]
+
+    # 欠損は Coarse で埋める
+    mu_fine = mu_fine.fillna(mu_coarse)
+
+    # Weight
+    w = n / (n + shrinkage_k)
+
+    # Shrinkage
+    mu_est = w * mu_fine + (1 - w) * mu_coarse
+    sigma_est = w * fine_stats["std"].fillna(0) + (1 - w) * coarse_stats["std"].fillna(0)
+
+    return pd.DataFrame(
+        {
+            "mean": mu_est,
+            "std": sigma_est,
+            "count": n,
+            "weight_fine": w,
+        }
+    )
+
+
+# =============================================================================
+# Step 1: 廃止 (互換性のため関数名のみ残すが何もしない)
 # =============================================================================
 
 
 def build_time_stats(db: Database) -> int:
-    """グループ別タイム統計を計算して mart.time_stats に保存"""
-    logger.info("Step 1: グループ統計を計算中...")
-
-    # 中央競馬のレースのみ対象
-    query = """
-    SELECT
-        r.track_code,
-        r.surface,
-        r.distance_m,
-        r.going,
-        res.time_sec,
-        res.final3f_sec
-    FROM core.race r
-    JOIN core.result res ON r.race_id = res.race_id
-    WHERE r.track_code BETWEEN 1 AND 10
-      AND res.time_sec IS NOT NULL
-      AND res.finish_pos IS NOT NULL
-    """
-    rows = db.fetch_all(query)
-
-    if not rows:
-        logger.warning("レースデータがありません")
-        return 0
-
-    df = pd.DataFrame(rows)
-
-    # バケット変換
-    df["distance_bucket"] = df["distance_m"].apply(distance_to_bucket)
-    df["going_bucket"] = df["going"].apply(going_to_bucket)
-
-    # グループ別統計
-    stats = (
-        df.groupby(["track_code", "surface", "distance_bucket", "going_bucket"])
-        .agg(
-            mu_time=("time_sec", "mean"),
-            sd_time=("time_sec", "std"),
-            mu_final3f=("final3f_sec", "mean"),
-            sd_final3f=("final3f_sec", "std"),
-            sample_count=("time_sec", "count"),
-        )
-        .reset_index()
-    )
-
-    # 標準偏差がNaN (1件のみ) の場合は 0 に
-    stats["sd_time"] = stats["sd_time"].fillna(0)
-    stats["sd_final3f"] = stats["sd_final3f"].fillna(0)
-
-    # サンプル不足グループの警告
-    low_sample = stats[stats["sample_count"] < MIN_SAMPLE_COUNT]
-    if len(low_sample) > 0:
-        logger.warning(f"サンプル不足グループ: {len(low_sample)} 件 (< {MIN_SAMPLE_COUNT})")
-
-    # DBに保存 (UPSERT)
-    upsert_query = """
-    INSERT INTO mart.time_stats
-        (track_code, surface, distance_bucket, going_bucket,
-         mu_time, sd_time, mu_final3f, sd_final3f, sample_count, updated_at)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
-    ON CONFLICT (track_code, surface, distance_bucket, going_bucket)
-    DO UPDATE SET
-        mu_time = EXCLUDED.mu_time,
-        sd_time = EXCLUDED.sd_time,
-        mu_final3f = EXCLUDED.mu_final3f,
-        sd_final3f = EXCLUDED.sd_final3f,
-        sample_count = EXCLUDED.sample_count,
-        updated_at = now()
-    """
-
-    for _, row in stats.iterrows():
-        db.execute(
-            upsert_query,
-            (
-                int(row["track_code"]),
-                int(row["surface"]),
-                int(row["distance_bucket"]),
-                int(row["going_bucket"]),
-                float(row["mu_time"]),
-                float(row["sd_time"]),
-                float(row["mu_final3f"]) if pd.notna(row["mu_final3f"]) else None,
-                float(row["sd_final3f"]) if pd.notna(row["sd_final3f"]) else None,
-                int(row["sample_count"]),
-            ),
-        )
-
-    db.connect().commit()
-    logger.info(f"Step 1: 完了 - {len(stats)} グループ")
-    return len(stats)
+    """以前の統計ロジック。現在は使われていません (Step 2 で動的に計算されます)"""
+    logger.info("Step 1: build_time_stats は廃止されました。Step 2 に統合されています。")
+    return 0
 
 
 # =============================================================================
@@ -187,26 +173,23 @@ def build_time_stats(db: Database) -> int:
 # =============================================================================
 
 
-def build_run_index(db: Database, rebuild: bool = False) -> int:
-    """1走ごとの基礎指標を計算して mart.run_index に保存"""
-    logger.info("Step 2: run_index を計算中...")
+# =============================================================================
+# Step 2: run_index 計算 (Feature Leakage修正版: EWM + Shrinkage)
+# =============================================================================
 
-    # 既存データがあれば増分更新
-    if not rebuild:
-        existing_query = "SELECT MAX(race_id) as max_race_id FROM mart.run_index"
-        result = db.fetch_one(existing_query)
-        max_race_id = result["max_race_id"] if result and result["max_race_id"] else 0
-        race_filter = f"AND r.race_id > {max_race_id}"
-    else:
-        race_filter = ""
-        # リビルド時は既存データ削除
-        db.execute("DELETE FROM mart.run_index")
-        db.connect().commit()
 
-    # レース+結果データ取得
-    query = f"""
+def build_run_index(db: Database, target_date: date | None = None, rebuild: bool = False) -> int:
+    """1走ごとの基礎指標を計算して mart.run_index に保存 (時系列シーケンシャル更新)"""
+    logger.info("Step 2: run_index を計算中 (EWM + Shrinkage)...")
+
+    # 1. 全レースデータを取得 (時系列計算のため全件ロードが必要)
+    # ※ target_date が指定されていても、過去からの推移が必要なため全件計算する
+    #   (ただし保存処理は対象日以降のみにするなどで最適化可能だが、今回はシンプルに全件UPSERTする)
+
+    query = """
     SELECT
         r.race_id,
+        r.race_date,
         r.track_code,
         r.surface,
         r.distance_m,
@@ -220,50 +203,103 @@ def build_run_index(db: Database, rebuild: bool = False) -> int:
     JOIN core.result res ON r.race_id = res.race_id
     WHERE r.track_code BETWEEN 1 AND 10
       AND res.finish_pos IS NOT NULL
-      {race_filter}
+      AND res.time_sec IS NOT NULL
+    ORDER BY r.race_date, r.race_id
     """
     rows = db.fetch_all(query)
 
     if not rows:
-        logger.info("Step 2: 新規レースなし")
+        logger.warning("Step 2: レースデータがありません")
         return 0
 
     df = pd.DataFrame(rows)
+    # Decimal型が含まれる可能性があるためfloatに変換
+    for col in ["time_sec", "final3f_sec"]:
+        if col in df.columns:
+            df[col] = df[col].astype(float)
+
     df["distance_bucket"] = df["distance_m"].apply(distance_to_bucket)
     df["going_bucket"] = df["going"].apply(going_to_bucket)
 
-    # グループ統計を取得
-    stats_query = """
-    SELECT track_code, surface, distance_bucket, going_bucket,
-           mu_time, sd_time, mu_final3f, sd_final3f
-    FROM mart.time_stats
-    """
-    stats_df = pd.DataFrame(db.fetch_all(stats_query))
+    # 日付型変換
+    # df["race_date"] = pd.to_datetime(df["race_date"]) # DBからdate型で返るなら不要だが念のため
+    # 既にsortされているが、indexをリセットしておく
+    df = df.reset_index(drop=True)
 
-    if stats_df.empty:
-        logger.error("グループ統計がありません。Step 1 を先に実行してください。")
-        return 0
+    logger.info(f"データロード完了: {len(df)} 件. 基準タイム計算開始...")
 
-    # 統計をマージ
-    df = df.merge(
-        stats_df,
-        on=["track_code", "surface", "distance_bucket", "going_bucket"],
-        how="left",
-    )
+    # 2. 基準タイムの計算 (Speed Index)
+    # Coarse: track, surface, distance
+    coarse_groups = ["track_code", "surface", "distance_bucket"]
+    # Fine: track, surface, distance, going
+    fine_groups = ["track_code", "surface", "distance_bucket", "going_bucket"]
 
-    # 指標計算
-    # speed_index = (mu_time - time_sec) / sd_time (大きいほど速い)
-    df["speed_index"] = (df["mu_time"] - df["time_sec"]) / df["sd_time"].replace(0, 1)
+    # Calculate Time Stats
+    time_coarse = calculate_benchmark_stats(df, coarse_groups, span=365 * 2)
+    time_fine = calculate_benchmark_stats(df, fine_groups, span=365 * 2)
 
-    # closing_index = (mu_final3f - final3f_sec) / sd_final3f (大きいほど速い)
-    df["closing_index"] = (df["mu_final3f"] - df["final3f_sec"]) / df["sd_final3f"].replace(0, 1)
+    # Shrinkage
+    # time_coarse/fine は df と同じ Index (sort済み) を持つ
+    time_bm = apply_shrinkage(time_fine, time_coarse, shrinkage_k=20.0)
+
+    # 3. 基準上がり3Fの計算 (Closing Index)
+    # 欠損がある場合は計算対象から外すが、EWMはNaNを無視して計算してくれる
+    # ただし count の計算で少しズレる可能性はあるが許容する
+
+    # calculate_benchmark_stats は現状 "time_sec" 固定になっているので、
+    # 一時的にカラム名を変更するか、関数を汎用化する必要がある。
+    # ここでは関数呼び出し前に rename して対応する (副作用なしコピーで)
+
+    df_3f = df.copy()
+    df_3f["time_sec"] = df_3f["final3f_sec"]  # Hack: final3fをtime_secとして渡す
+
+    f3f_coarse = calculate_benchmark_stats(df_3f, coarse_groups, span=365 * 2)
+    f3f_fine = calculate_benchmark_stats(df_3f, fine_groups, span=365 * 2)
+
+    f3f_bm = apply_shrinkage(f3f_fine, f3f_coarse, shrinkage_k=20.0)
+
+    # 4. 指標計算
+    # speed_index = (benchmark_mean - time_sec) / benchmark_std
+    # std が 0 または NaN の場合は 1.0 にする (偏差値計算できないため)
+
+    # 基準タイム (平均)
+    df["bm_time_mean"] = time_bm["mean"]
+    df["bm_time_std"] = time_bm["std"].fillna(0).replace(0, 1.0)  # Avoid div by zero
+
+    df["speed_index"] = (df["bm_time_mean"] - df["time_sec"]) / df["bm_time_std"]
+
+    # 上がり指標
+    df["bm_3f_mean"] = f3f_bm["mean"]
+    df["bm_3f_std"] = f3f_bm["std"].fillna(0).replace(0, 1.0)
+
+    df["closing_index"] = (df["bm_3f_mean"] - df["final3f_sec"]) / df["bm_3f_std"]
     df["closing_missing"] = df["final3f_sec"].isna()
 
-    # early_index = -corner4_pos (大きいほど前に行く)
-    df["early_index"] = -df["corner4_pos"].fillna(10)  # 欠損時は後方扱い
-
-    # position_gain = corner4_pos - finish_pos (マイナス=差しが効く)
+    # early_index, position_gain
+    df["early_index"] = -df["corner4_pos"].fillna(10)
     df["position_gain"] = df["corner4_pos"] - df["finish_pos"]
+
+    # 5. 保存対象のフィルタリング
+    # rebuild=True なら全件保存
+    # rebuild=False なら、本来は「新規レースのみ」だが、
+    # 過去の集計値が変わる可能性があるため、本来は全件更新すべき。
+    # しかしパフォーマンスを考慮し、target_date があればその日以降、なければ全件とする。
+
+    if target_date:
+        save_df = df[df["race_date"] >= target_date]
+        logger.info(f"保存対象: {target_date} 以降 ({len(save_df)} 件)")
+    else:
+        save_df = df
+        logger.info(f"保存対象: 全期間 ({len(save_df)} 件)")
+
+    if save_df.empty:
+        return 0
+
+    # リビルド時はテーブルクリア
+    if rebuild and not target_date:
+        logger.info("古いデータを削除中...")
+        db.execute("DELETE FROM mart.run_index")
+        db.connect().commit()
 
     # DBに保存
     insert_query = """
@@ -279,8 +315,14 @@ def build_run_index(db: Database, rebuild: bool = False) -> int:
         closing_missing = EXCLUDED.closing_missing
     """
 
+    # execute_batch を使うと速いが、ここでは既存のループで実装する（件数が多い場合は要検討）
+    # 数万件なら execute_batch (psycopg2.extras) が望ましいが、infrastructure.database の実装次第。
+    # ここでは既存コードにならってループするが、件数が多いので batch commit する
+
     count = 0
-    for _, row in df.iterrows():
+    batch_size = 1000
+
+    for _, row in save_df.iterrows():
         db.execute(
             insert_query,
             (
@@ -294,6 +336,8 @@ def build_run_index(db: Database, rebuild: bool = False) -> int:
             ),
         )
         count += 1
+        if count % batch_size == 0:
+            db.connect().commit()
 
     db.connect().commit()
     logger.info(f"Step 2: 完了 - {count} 件")
@@ -309,7 +353,6 @@ def calc_trend(values: list) -> float | None:
     """直近N走の傾き (線形回帰)"""
     if len(values) < 2:
         return None
-    import numpy as np
 
     x = np.arange(len(values))
     # decimal.Decimal 対応: floatに変換
@@ -526,7 +569,6 @@ def _insert_horse_stats(
         vals = lst[:n]
         if len(vals) < 2:
             return None
-        import numpy as np
 
         return float(np.std(vals, ddof=1))
 
@@ -791,7 +833,7 @@ def main():
             build_time_stats(db)
 
         if args.step is None or args.step == 2:
-            build_run_index(db, rebuild=args.rebuild)
+            build_run_index(db, target_date=target_date, rebuild=args.rebuild)
 
         if args.step is None or args.step == 3:
             build_horse_stats(db, target_date=target_date, rebuild=args.rebuild)
