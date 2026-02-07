@@ -70,7 +70,45 @@ payouts = PayoutRecord.parse(payload)  # list[PayoutRecord]
 | `core` | 正規化テーブル |
 | `mart` | 特徴量テーブル（将来） |
 
-### 3.2 主キー設計
+### 3.2 raw.jv_raw テーブル
+
+**目的**: JV-Linkから取得した生データをそのまま保存
+
+| 用途 | 説明 |
+|------|------|
+| バックアップ | 元データの完全保存 |
+| 再処理 | パーサー修正後に再パースが可能 |
+| デバッグ | パース失敗時に元データを確認 |
+| 監査 | 取得履歴の記録 |
+
+```sql
+-- 構造
+CREATE TABLE raw.jv_raw (
+    id SERIAL PRIMARY KEY,
+    dataspec VARCHAR(10),  -- RACE, DIFF
+    rec_id VARCHAR(10),    -- RA, SE, UM など
+    filename TEXT,
+    payload TEXT,          -- 生の固定長テキスト
+    created_at TIMESTAMP
+);
+```
+
+### 3.3 データロード動作 (UPSERT)
+
+**同じファイルを再ロードしても安全**
+
+| テーブル | 動作 | キー |
+|---------|------|------|
+| `raw.jv_raw` | `DO NOTHING` | 重複スキップ |
+| `core.race` | `DO UPDATE` | `race_id` |
+| `core.runner` | `DO UPDATE` | `race_id + horse_id` |
+| `core.horse` | `DO UPDATE` | `horse_id` |
+| `core.jockey` | `DO UPDATE` | `jockey_id` |
+| `core.trainer` | `DO UPDATE` | `trainer_id` |
+| `core.payout` | `DO UPDATE` | `race_id + bet_type` |
+| `core.odds_final` | `DO UPDATE` | `race_id + horse_id` |
+
+### 3.4 主キー設計
 
 #### race_id
 ```
@@ -83,7 +121,7 @@ race_id = YYYYMMDD * 10000 + track_code * 100 + race_no
 horse_id = TEXT型 (血統登録番号)
 ```
 
-### 3.3 テーブル一覧
+### 3.5 テーブル一覧
 | テーブル | PK | 状態 |
 |----------|-------|------|
 | `core.race` | race_id | ✅ |
@@ -94,7 +132,7 @@ horse_id = TEXT型 (血統登録番号)
 | `core.payout` | (race_id, bet_type, selection) | ✅ |
 | `core.odds_final` | (race_id, horse_id) | ✅ |
 
-### 3.4 FK問題と解決策 (実装済み)
+### 3.6 FK問題と解決策 (実装済み)
 
 **問題**: 地方競馬/海外データはマスタが欠落
 
