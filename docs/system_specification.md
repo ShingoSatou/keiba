@@ -209,51 +209,19 @@ keiba/
 
 ## 4. 特徴量生成パイプライン
 
-### 4.1 Step 1: time_stats (基準タイム計算)
-
-**目的**: コース条件ごとの「標準的なタイム」を計算。走破指数の基準となる。
-
-**入力**: `core.result`, `core.race`
-
-**処理**:
-```sql
-SELECT
-    track_code, surface, distance_m, going,
-    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY time_sec) as time_median,
-    PERCENTILE_CONT(0.75) - PERCENTILE_CONT(0.25) as time_iqr
-FROM core.result res
-JOIN core.race r ON res.race_id = r.race_id
-GROUP BY track_code, surface, distance_m, going
-```
-
-**出力**: `mart.time_stats`
-
----
-
-### 4.2 Step 2: run_index (走破指数計算)
+### 4.1 Step 2: run_index (走破指数計算)
 
 **目的**: 1走ごとのパフォーマンスを数値化。
 
-**入力**: `core.result`, `mart.time_stats`
+**入力**: `core.result`, `core.race` (全期間)
 
-**計算式**:
-```python
-# スピード指数: 基準タイムとの差を標準化
-speed_index = (time_median - time_sec) / time_iqr * 10 + 50
-
-# 末脚指数: 上がり3Fを同様に標準化
-closing_index = (final3f_median - final3f_sec) / final3f_iqr * 10 + 50
-
-# 先行指数: (閾値として使用する場合は別途計算)
-early_index = ...
-
-# 位置取り変化: corner_pos から計算
-position_gain = corner_pos[0] - finish_pos
-```
-
-**特徴**:
-- 指数50が平均、60以上が好走、40以下が凡走
-- 異なるコース・距離でも比較可能
+**計算手法 (Feature Leakage修正版)**:
+1. **基準タイム計算**:
+   - 全レースを時系列順に処理。
+   - **EWM (Exponential Weighted Moving Average)** を用いて過去のレースタイムから基準タイムを動的に生成 (`span=730`日)。
+   - **Hierarchical Shrinkage**: サンプル不足時は、細かい条件 (`track, surface, distance, going`) から広域条件 (`track, surface, distance`) へ自動的にフォールバックして数値を安定させる。
+2. **標準化**:
+   - `speed_index = (benchmark_mean - time_sec) / benchmark_std`
 
 **出力**: `mart.run_index`
 

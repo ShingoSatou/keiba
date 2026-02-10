@@ -120,6 +120,26 @@ uv run python scripts/check_schema.py
 
 ---
 
-## 5. 参考資料
+## 6. Feature Engineering (Mart)
+
+### 6.1 `mart.run_index` (基準タイム偏差値)
+**計算ロジック (Feature Leakage修正版)**:
+- **EWM (Exponential Weighted Moving Average)**: 全期間一括集計ではなく、時系列順に過去データのみを用いて基準タイムを動的に更新。
+  - `span=730` (約2年) の減衰を適用。
+  - `shift(1)` により、当該レース以前の統計のみを使用（未来情報の排除）。
+- **Hierarchical Shrinkage (階層型縮約)**:
+  - サンプル不足時の数値を安定させるため、以下の2段階の統計をベイズ的にブレンド。
+    1. **Fine**: `[track, surface, distance, going]` (馬場状態を含む)
+    2. **Coarse**: `[track, surface, distance]` (馬場状態不問)
+  - サンプル数 $n$ とハイパーパラメータ $k$ ($k=20$) を用いて、重み $w = n / (n + k)$ で Fine 統計を採用。
+
+### 6.2 `mart.horse_stats` / `mart.person_stats`
+- **Horse**: 過去走の `speed_index` 等の履歴を集計（直近3走平均、コース相性など）。
+- **Person**: 騎手・調教師の過去1年間の勝率・複勝率を集計（日次ループで計算）。
+
+---
+
+## 7. 参考資料
 - `docs/JV-link/JV-Data仕様書_4.9.0.1.xlsx` (コード表含む)
 - `docs/JV-link/JV-Linkインターフェース仕様書_4.9.0.1(Win).pdf`
+

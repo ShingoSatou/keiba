@@ -34,6 +34,7 @@ from sklearn.metrics import log_loss, roc_auc_score
 
 from app.infrastructure.database import Database
 from app.services.ev_service import EVService
+from scripts.train import TARGET_COL, _split_by_race_id
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -86,8 +87,10 @@ def load_model():
     with open(model_path, "rb") as f:
         model_data = pickle.load(f)
 
-    with open(calibrator_path, "rb") as f:
-        calibrator = pickle.load(f)
+    calibrator = None
+    if calibrator_path.exists():
+        with open(calibrator_path, "rb") as f:
+            calibrator = pickle.load(f)
 
     return model_data["model"], calibrator, model_data["feature_names"]
 
@@ -104,6 +107,7 @@ def run_backtest(
     slippage: float = 0.15,
     min_prob: float = 0.03,
     bet_amount: int = 500,
+    use_test_split: bool = False,
 ) -> pd.DataFrame:
     """バックテストを実行"""
     logger.info("バックテスト開始...")
@@ -128,6 +132,24 @@ def run_backtest(
     if to_date:
         df = df[df["race_date"] <= pd.Timestamp(to_date)]
 
+    # Testセットのみを使用する場合
+    if use_test_split:
+        logger.info("学習データのリークを防ぐため、Testセットのみ抽出します (--use-test-split)")
+        # train.py と同じロジックで分割
+        # X, y は分割ロジックの内部で index 抽出に使われるだけなので、df をそのまま渡す
+        if TARGET_COL not in df.columns:
+            logger.warning(f"{TARGET_COL} カラムがないため、Testセット抽出ができません")
+        else:
+            try:
+                # _split_by_race_id は (X_train, y_train, X_es_val, y_es_val, X_test, y_test) を返す
+                # test_size=0.2 (デフォルト) を使用
+                _, _, _, _, df_test, _ = _split_by_race_id(df, df, df[TARGET_COL], test_size=0.2)
+                df = df_test
+                logger.info(f"Testセット抽出完了: {len(df)} 件")
+            except Exception as e:
+                logger.error(f"Testセット抽出に失敗しました: {e}")
+                return pd.DataFrame()
+
     if df.empty:
         logger.warning("対象データがありません")
         return pd.DataFrame()
@@ -143,8 +165,12 @@ def run_backtest(
     X = df[available_features]
 
     raw_proba = model.predict_proba(X)[:, 1]
-    # calibrator は IsotonicRegression なので predict() を使用
-    calibrated_proba = calibrator.predict(raw_proba)
+
+    if calibrator is not None:
+        # calibrator は IsotonicRegression なので predict() を使用
+        calibrated_proba = calibrator.predict(raw_proba)
+    else:
+        calibrated_proba = raw_proba
 
     df["p_win"] = calibrated_proba
     df["p_win_raw"] = raw_proba
@@ -319,6 +345,9 @@ def main():
     parser.add_argument("--slippage", type=float, default=0.15, help="スリッページ率")
     parser.add_argument("--min-prob", type=float, default=0.03, help="最低確率閾値")
     parser.add_argument("--bet-amount", type=int, default=500, help="賭け金")
+    parser.add_argument(
+        "--use-test-split", action="store_true", help="学習に使っていないTestデータのみを使用"
+    )
     args = parser.parse_args()
 
     from_date = None
@@ -340,6 +369,7 @@ def main():
             slippage=args.slippage,
             min_prob=args.min_prob,
             bet_amount=args.bet_amount,
+            use_test_split=args.use_test_split,
         )
 
     if results:
