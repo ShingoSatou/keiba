@@ -231,3 +231,9 @@ models/
 
 # W&B logs
 wandb/
+
+# バックテスト結果 (繰り返し生成されるため除外)
+docs/reports/backtest_*.md
+
+# 最適化結果 (繰り返し生成されるため除外)
+docs/reports/optimization_*.md
