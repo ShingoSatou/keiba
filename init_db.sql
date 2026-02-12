@@ -222,6 +222,378 @@ CREATE TABLE IF NOT EXISTS core.diff_event (
 CREATE INDEX IF NOT EXISTS idx_diff_race_time ON core.diff_event(race_id, event_time);
 
 -- =============================================================================
+-- CORE層: 時系列オッズ (O1) - 5分足の全データを格納
+-- =============================================================================
+
+-- O1ヘッダー（スナップショット単位）
+CREATE TABLE IF NOT EXISTS core.o1_header (
+    race_id               BIGINT NOT NULL REFERENCES core.race(race_id) ON DELETE CASCADE,
+    data_kbn              SMALLINT NOT NULL,        -- 1=中間, 2=前日最終, 3=最終, 4=確定
+    announce_mmddhhmi     CHAR(8) NOT NULL,         -- 発表月日時分 (中間のみキー、他は'00000000')
+    win_pool_total_100yen BIGINT,                   -- 単勝票数合計（単位百円）
+    place_pool_total_100yen BIGINT,                 -- 複勝票数合計
+    data_create_ymd       CHAR(8),                  -- データ作成年月日
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (race_id, data_kbn, announce_mmddhhmi)
+);
+
+CREATE INDEX IF NOT EXISTS idx_o1_header_race_time ON core.o1_header(race_id, data_kbn, announce_mmddhhmi);
+
+-- O1明細（馬番単位）
+CREATE TABLE IF NOT EXISTS core.o1_win (
+    race_id               BIGINT NOT NULL,
+    data_kbn              SMALLINT NOT NULL,
+    announce_mmddhhmi     CHAR(8) NOT NULL,
+    horse_no              SMALLINT NOT NULL,
+    win_odds_x10          INTEGER,                  -- オッズ×10 (12.3倍 → 123)
+    win_popularity        SMALLINT,
+    PRIMARY KEY (race_id, data_kbn, announce_mmddhhmi, horse_no),
+    FOREIGN KEY (race_id, data_kbn, announce_mmddhhmi)
+        REFERENCES core.o1_header(race_id, data_kbn, announce_mmddhhmi) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_o1_win_race_horse ON core.o1_win(race_id, horse_no);
+
+-- =============================================================================
+-- CORE層: 馬体重速報 (WH)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS core.wh_header (
+    race_id               BIGINT NOT NULL REFERENCES core.race(race_id) ON DELETE CASCADE,
+    data_kbn              SMALLINT NOT NULL,
+    announce_mmddhhmi     CHAR(8) NOT NULL,
+    data_create_ymd       CHAR(8),
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (race_id, data_kbn, announce_mmddhhmi)
+);
+
+CREATE TABLE IF NOT EXISTS core.wh_detail (
+    race_id               BIGINT NOT NULL,
+    data_kbn              SMALLINT NOT NULL,
+    announce_mmddhhmi     CHAR(8) NOT NULL,
+    horse_no              SMALLINT NOT NULL,
+    body_weight_kg        SMALLINT,
+    diff_sign             CHAR(1),                  -- '+', '-', ' '
+    diff_kg               SMALLINT,
+    PRIMARY KEY (race_id, data_kbn, announce_mmddhhmi, horse_no),
+    FOREIGN KEY (race_id, data_kbn, announce_mmddhhmi)
+        REFERENCES core.wh_header(race_id, data_kbn, announce_mmddhhmi) ON DELETE CASCADE
+);
+
+-- =============================================================================
+-- CORE層: 当日変更 (WE/AV/JC/TC/CC)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS core.event_change (
+    id                    BIGSERIAL PRIMARY KEY,
+    race_id               BIGINT NOT NULL REFERENCES core.race(race_id) ON DELETE CASCADE,
+    record_type           CHAR(2) NOT NULL,         -- 'WE','AV','JC','TC','CC'
+    data_create_ymd       CHAR(8),
+    announce_mmddhhmi     CHAR(8),
+    payload_parsed        JSONB,                    -- 変更内容（種類で構造が変わるためJSON）
+    received_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_change_race_type ON core.event_change(race_id, record_type, announce_mmddhhmi);
+
+-- =============================================================================
+-- CORE層: 坂路調教 (HC - SLOP)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS core.training_slop (
+    id                    BIGSERIAL PRIMARY KEY,
+    horse_id              TEXT NOT NULL REFERENCES core.horse(horse_id),
+    training_date         DATE NOT NULL,
+    data_kbn              SMALLINT,
+    training_center       CHAR(1),                  -- 0:美浦 1:栗東
+    training_time         CHAR(4),                  -- hhmm
+    total_4f              NUMERIC(4,1),
+    lap_4f                NUMERIC(4,1),
+    total_3f              NUMERIC(4,1),
+    lap_3f                NUMERIC(4,1),
+    total_2f              NUMERIC(4,1),
+    lap_2f                NUMERIC(4,1),
+    lap_1f                NUMERIC(4,1),             -- 1Fはラップのみ
+    payload_raw           TEXT,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (horse_id, training_date, training_center, total_4f)
+);
+
+CREATE INDEX IF NOT EXISTS idx_training_slop_horse ON core.training_slop(horse_id, training_date);
+
+-- =============================================================================
+-- CORE層: ウッド調教 (WC - WOOD)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS core.training_wood (
+    id                    BIGSERIAL PRIMARY KEY,
+    horse_id              TEXT NOT NULL REFERENCES core.horse(horse_id),
+    training_date         DATE NOT NULL,
+    data_kbn              SMALLINT,
+    training_center       CHAR(1),                  -- 0:美浦 1:栗東
+    training_time         CHAR(4),                  -- hhmm
+    course                CHAR(1),                  -- 0:A 1:B 2:C 3:D 4:E
+    direction             CHAR(1),                  -- 0:右 1:左
+
+    total_10f             NUMERIC(4,1),
+    lap_10f               NUMERIC(3,1),
+    total_9f              NUMERIC(4,1),
+    lap_9f                NUMERIC(3,1),
+    total_8f              NUMERIC(4,1),
+    lap_8f                NUMERIC(3,1),
+    total_7f              NUMERIC(4,1),
+    lap_7f                NUMERIC(3,1),
+    total_6f              NUMERIC(4,1),
+    lap_6f                NUMERIC(3,1),
+    total_5f              NUMERIC(4,1),
+    lap_5f                NUMERIC(3,1),
+    total_4f              NUMERIC(4,1),
+    lap_4f                NUMERIC(3,1),
+    total_3f              NUMERIC(4,1),
+    lap_3f                NUMERIC(3,1),
+    total_2f              NUMERIC(4,1),
+    lap_2f                NUMERIC(3,1),
+    lap_1f                NUMERIC(3,1),
+
+    payload_raw           TEXT,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (horse_id, training_date, training_center, training_time)
+);
+
+CREATE INDEX IF NOT EXISTS idx_training_wood_horse ON core.training_wood(horse_id, training_date);
+
+-- =============================================================================
+-- RAW層: CK (出走別着度数 - SNAP/SNPN)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS raw.jv_ck_event (
+  ingest_id          BIGSERIAL PRIMARY KEY,
+  ingested_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  dataspec           TEXT NOT NULL CHECK (dataspec IN ('SNAP','SNPN')),
+  record_type        CHAR(2) NOT NULL DEFAULT 'CK',
+
+  data_kbn           SMALLINT NOT NULL,   -- データ区分
+  data_create_ymd    DATE NOT NULL,       -- データ作成年月日
+
+  -- CKキー
+  kaisai_year        SMALLINT NOT NULL,   -- 開催年 yyyy
+  kaisai_md          CHAR(4)  NOT NULL,   -- 開催月日 mmdd
+  track_cd           CHAR(2)  NOT NULL,   -- 競馬場コード
+  kaisai_kai         SMALLINT NOT NULL,   -- 開催回
+  kaisai_nichi       SMALLINT NOT NULL,   -- 開催日目
+  race_no            SMALLINT NOT NULL,   -- レース番号
+  horse_id           TEXT NOT NULL,       -- 血統登録番号 (CKは馬番を持たない)
+
+  horse_name         TEXT,
+  payload            BYTEA NOT NULL,       -- 生レコード（Shift-JIS/JIS8混在のまま）
+  payload_sha256     CHAR(64) NOT NULL,    -- 重複排除用ハッシュ
+
+  UNIQUE (dataspec, data_create_ymd, kaisai_year, kaisai_md, track_cd, kaisai_kai, kaisai_nichi, race_no, horse_id, payload_sha256)
+);
+
+CREATE INDEX IF NOT EXISTS ix_raw_ck_key
+  ON raw.jv_ck_event (kaisai_year, kaisai_md, track_cd, kaisai_kai, kaisai_nichi, race_no, horse_id);
+
+CREATE INDEX IF NOT EXISTS ix_raw_ck_created
+  ON raw.jv_ck_event (data_create_ymd);
+
+
+-- =============================================================================
+-- CORE層: CK (出走時点情報) - 解析用正規化テーブル
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS core.ck_runner_event (
+  dataspec           TEXT NOT NULL CHECK (dataspec IN ('SNAP','SNPN')),
+  data_create_ymd    DATE NOT NULL,
+
+  kaisai_year        SMALLINT NOT NULL,
+  kaisai_md          CHAR(4)  NOT NULL,
+  track_cd           CHAR(2)  NOT NULL,
+  kaisai_kai         SMALLINT NOT NULL,
+  kaisai_nichi       SMALLINT NOT NULL,
+  race_no            SMALLINT NOT NULL,
+  horse_id           TEXT NOT NULL,
+
+  horse_name         TEXT,
+
+  -- 主要ブロック（JSONB配列で柔軟に保持）
+  finish_counts      JSONB NOT NULL,  -- {"overall": [...], "central": [...], ...}
+  style_counts       JSONB,           -- {"nige": N, "senko": N, ...}
+  registered_races_n INTEGER,
+
+  -- 人的リソースコード (Key codes only)
+  jockey_cd          CHAR(5),
+  trainer_cd         CHAR(5),
+  owner_cd           CHAR(6),
+  breeder_cd         CHAR(8),
+
+  entity_prize       JSONB,           -- {"jockey": {...}, "trainer": {...}}
+
+  PRIMARY KEY (dataspec, data_create_ymd, kaisai_year, kaisai_md, track_cd, kaisai_kai, kaisai_nichi, race_no, horse_id)
+);
+
+
+-- =============================================================================
+-- MART層: CK特徴量 (45列確定モデル投入用)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS mart.feat_ck_win (
+  -- キー
+  kaisai_year        SMALLINT NOT NULL,
+  kaisai_md          CHAR(4)  NOT NULL,
+  track_cd           CHAR(2)  NOT NULL,
+  kaisai_kai         SMALLINT NOT NULL,
+  kaisai_nichi       SMALLINT NOT NULL,
+  race_no            SMALLINT NOT NULL,
+  horse_id           TEXT NOT NULL,
+
+  -- メタ
+  dataspec           TEXT NOT NULL CHECK (dataspec IN ('SNAP','SNPN')),
+  data_create_ymd    DATE NOT NULL,
+
+  -- 1) 総合（全成績）
+  h_total_starts     INTEGER NOT NULL,
+  h_total_wins       INTEGER NOT NULL,
+  h_total_top3       INTEGER NOT NULL,
+  h_total_top5       INTEGER NOT NULL,
+  h_total_out        INTEGER NOT NULL,
+
+  -- 2) 中央合計
+  h_central_starts   INTEGER NOT NULL,
+  h_central_wins     INTEGER NOT NULL,
+  h_central_top3     INTEGER NOT NULL,
+
+  -- 3) 回り
+  h_turf_right_starts    INTEGER NOT NULL,
+  h_turf_left_starts     INTEGER NOT NULL,
+  h_turf_straight_starts INTEGER NOT NULL,
+  h_dirt_right_starts    INTEGER NOT NULL,
+  h_dirt_left_starts     INTEGER NOT NULL,
+  h_dirt_straight_starts INTEGER NOT NULL,
+
+  -- 4) 馬場状態
+  h_turf_good_starts  INTEGER NOT NULL,
+  h_turf_soft_starts  INTEGER NOT NULL,
+  h_turf_heavy_starts INTEGER NOT NULL,
+  h_turf_bad_starts   INTEGER NOT NULL,
+  h_dirt_good_starts  INTEGER NOT NULL,
+  h_dirt_soft_starts  INTEGER NOT NULL,
+  h_dirt_heavy_starts INTEGER NOT NULL,
+  h_dirt_bad_starts   INTEGER NOT NULL,
+
+  -- 5) 距離
+  h_turf_16down_starts INTEGER NOT NULL,
+  h_turf_22down_starts INTEGER NOT NULL,
+  h_turf_22up_starts   INTEGER NOT NULL,
+  h_dirt_16down_starts INTEGER NOT NULL,
+  h_dirt_22down_starts INTEGER NOT NULL,
+  h_dirt_22up_starts   INTEGER NOT NULL,
+
+  -- 6) 脚質傾向
+  h_style_nige_cnt   INTEGER NOT NULL,
+  h_style_senko_cnt  INTEGER NOT NULL,
+  h_style_sashi_cnt  INTEGER NOT NULL,
+  h_style_oikomi_cnt INTEGER NOT NULL,
+
+  -- 7) 登録レース数
+  h_registered_races_n INTEGER NOT NULL,
+
+  -- 8) 賞金（騎手/調教師/馬主/生産者）
+  j_year_flat_prize_total BIGINT NOT NULL,
+  j_year_ob_prize_total   BIGINT NOT NULL,
+  j_cum_flat_prize_total  BIGINT NOT NULL,
+  j_cum_ob_prize_total    BIGINT NOT NULL,
+
+  t_year_flat_prize_total BIGINT NOT NULL,
+  t_year_ob_prize_total   BIGINT NOT NULL,
+  t_cum_flat_prize_total  BIGINT NOT NULL,
+  t_cum_ob_prize_total    BIGINT NOT NULL,
+
+  o_year_prize_total      BIGINT NOT NULL,
+  o_cum_prize_total       BIGINT NOT NULL,
+  b_year_prize_total      BIGINT NOT NULL,
+  b_cum_prize_total       BIGINT NOT NULL,
+
+  PRIMARY KEY (kaisai_year, kaisai_md, track_cd, kaisai_kai, kaisai_nichi, race_no, horse_id, dataspec, data_create_ymd)
+);
+
+CREATE INDEX IF NOT EXISTS ix_feat_ck_race
+  ON mart.feat_ck_win (kaisai_year, kaisai_md, track_cd, kaisai_kai, kaisai_nichi, race_no);
+
+
+-- =============================================================================
+-- CORE層: マイニングデータ (DM/TM - MING)
+-- =============================================================================
+
+-- タイム型マイニング (DM)
+CREATE TABLE IF NOT EXISTS core.mining_dm (
+    race_id               BIGINT NOT NULL,
+    horse_no              SMALLINT NOT NULL,
+    data_kbn              SMALLINT,
+    dm_time_x10           INTEGER,                  -- 基準タイム×10
+    dm_deviation          SMALLINT,                 -- 偏差
+    dm_rank               SMALLINT,                 -- 順位
+    payload_raw           TEXT,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (race_id, horse_no)
+);
+
+-- 対戦型マイニング (TM)
+CREATE TABLE IF NOT EXISTS core.mining_tm (
+    race_id               BIGINT NOT NULL,
+    horse_no              SMALLINT NOT NULL,
+    data_kbn              SMALLINT,
+    tm_score              INTEGER,                  -- 対戦スコア
+    tm_rank               SMALLINT,
+    payload_raw           TEXT,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (race_id, horse_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mining_dm_race ON core.mining_dm(race_id);
+CREATE INDEX IF NOT EXISTS idx_mining_tm_race ON core.mining_tm(race_id);
+
+-- =============================================================================
+-- CORE層: 開催スケジュール (YS - YSCH)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS core.schedule (
+    schedule_id           BIGSERIAL PRIMARY KEY,
+    race_date             DATE NOT NULL,
+    track_code            SMALLINT NOT NULL,
+    kai                   SMALLINT,                 -- 開催回
+    nichi                 SMALLINT,                 -- 開催日目
+    race_count            SMALLINT,                 -- レース数
+    grade_info            TEXT,                     -- グレード情報
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (race_date, track_code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_schedule_date ON core.schedule(race_date);
+
+-- =============================================================================
+-- CORE層: コース情報 (CS - COMM)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS core.course (
+    course_id             BIGSERIAL PRIMARY KEY,
+    track_code            SMALLINT NOT NULL,
+    surface               SMALLINT NOT NULL,        -- 1=芝, 2=ダート
+    distance_m            SMALLINT NOT NULL,
+    course_name           TEXT,
+    turn_dir              SMALLINT,                 -- 1=右, 2=左, 3=直線
+    course_inout          SMALLINT,                 -- A/B/C コース
+    width_m               NUMERIC(4,1),             -- コース幅
+    straight_m            SMALLINT,                 -- 直線距離
+    slope_info            TEXT,                     -- 勾配情報
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (track_code, surface, distance_m, course_inout)
+);
+
+CREATE INDEX IF NOT EXISTS idx_course_track ON core.course(track_code, surface, distance_m);
+
+-- =============================================================================
 -- 完了メッセージ
 -- =============================================================================
 -- 実行完了後の確認用

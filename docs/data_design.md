@@ -1,7 +1,7 @@
-# データ設計ドキュメント
+# データ設計めも
 
 ## 概要
-JRA-VAN Data Lab. (JV-Link) から取得するデータの設計方針。
+JRA-VAN Data Lab. (JV-Link) から取得するデータの設計めも。
 
 ---
 
@@ -70,7 +70,45 @@ payouts = PayoutRecord.parse(payload)  # list[PayoutRecord]
 | `core` | 正規化テーブル |
 | `mart` | 特徴量テーブル（将来） |
 
-### 3.2 主キー設計
+### 3.2 raw.jv_raw テーブル
+
+**目的**: JV-Linkから取得した生データをそのまま保存
+
+| 用途 | 説明 |
+|------|------|
+| バックアップ | 元データの完全保存 |
+| 再処理 | パーサー修正後に再パースが可能 |
+| デバッグ | パース失敗時に元データを確認 |
+| 監査 | 取得履歴の記録 |
+
+```sql
+-- 構造
+CREATE TABLE raw.jv_raw (
+    id SERIAL PRIMARY KEY,
+    dataspec VARCHAR(10),  -- RACE, DIFF
+    rec_id VARCHAR(10),    -- RA, SE, UM など
+    filename TEXT,
+    payload TEXT,          -- 生の固定長テキスト
+    created_at TIMESTAMP
+);
+```
+
+### 3.3 データロード動作 (UPSERT)
+
+**同じファイルを再ロードしても安全**
+
+| テーブル | 動作 | キー |
+|---------|------|------|
+| `raw.jv_raw` | `DO NOTHING` | 重複スキップ |
+| `core.race` | `DO UPDATE` | `race_id` |
+| `core.runner` | `DO UPDATE` | `race_id + horse_id` |
+| `core.horse` | `DO UPDATE` | `horse_id` |
+| `core.jockey` | `DO UPDATE` | `jockey_id` |
+| `core.trainer` | `DO UPDATE` | `trainer_id` |
+| `core.payout` | `DO UPDATE` | `race_id + bet_type` |
+| `core.odds_final` | `DO UPDATE` | `race_id + horse_id` |
+
+### 3.4 主キー設計
 
 #### race_id
 ```
@@ -83,7 +121,7 @@ race_id = YYYYMMDD * 10000 + track_code * 100 + race_no
 horse_id = TEXT型 (血統登録番号)
 ```
 
-### 3.3 テーブル一覧
+### 3.5 テーブル一覧
 | テーブル | PK | 状態 |
 |----------|-------|------|
 | `core.race` | race_id | ✅ |
@@ -94,14 +132,14 @@ horse_id = TEXT型 (血統登録番号)
 | `core.payout` | (race_id, bet_type, selection) | ✅ |
 | `core.odds_final` | (race_id, horse_id) | ✅ |
 
-### 3.4 FK問題と解決策 (実装済み)
+### 3.6 FK問題と解決策 (実装済み)
 
 **問題**: 地方競馬/海外データはマスタが欠落
 
 **解決策**:
 1. `jockey_id`, `trainer_id` を NULL許容
 2. `core.horse`, `core.race` へ自動Stub登録
-3. 生値カラム (`trainer_code_raw`, `jockey_code_raw` 等) で元データ保持
+3. 生値カラム（`trainer_code_raw`, `jockey_code_raw` 等）で元データ保持（※現状はスキーマ/ローダ整合が必要）
 
 ---
 
@@ -111,18 +149,18 @@ horse_id = TEXT型 (血統登録番号)
 # パーサーテスト
 uv run pytest tests/test_parsers.py -v
 
-# DB統計確認
-uv run python scripts/analyze_db_stats.py
+# パーサースモーク（補助）
+uv run python scripts/verify_parsers.py
 
-# スキーマ確認
-uv run python scripts/check_schema.py
+# DBロード（例）
+uv run python scripts/load_to_db.py --input-dir data/
 ```
 
 ---
 
-## 6. Feature Engineering (Mart)
+## 5. Feature Engineering (Mart)
 
-### 6.1 `mart.run_index` (基準タイム偏差値)
+### 5.1 `mart.run_index` (基準タイム偏差値)
 **計算ロジック (Feature Leakage修正版)**:
 - **EWM (Exponential Weighted Moving Average)**: 全期間一括集計ではなく、時系列順に過去データのみを用いて基準タイムを動的に更新。
   - `span=730` (約2年) の減衰を適用。
@@ -133,13 +171,14 @@ uv run python scripts/check_schema.py
     2. **Coarse**: `[track, surface, distance]` (馬場状態不問)
   - サンプル数 $n$ とハイパーパラメータ $k$ ($k=20$) を用いて、重み $w = n / (n + k)$ で Fine 統計を採用。
 
-### 6.2 `mart.horse_stats` / `mart.person_stats`
+### 5.2 `mart.horse_stats` / `mart.person_stats`
 - **Horse**: 過去走の `speed_index` 等の履歴を集計（直近3走平均、コース相性など）。
 - **Person**: 騎手・調教師の過去1年間の勝率・複勝率を集計（日次ループで計算）。
 
 ---
 
-## 7. 参考資料
+## 6. 参考資料
+- `docs/JV-link/JV-Data仕様書_4.9.0.1.pdf`
 - `docs/JV-link/JV-Data仕様書_4.9.0.1.xlsx` (コード表含む)
-- `docs/JV-link/JV-Linkインターフェース仕様書_4.9.0.1(Win).pdf`
+- `docs/JV-link/JV-Data仕様書_4.9.0.1.docling.md`（検索・参照用）
 

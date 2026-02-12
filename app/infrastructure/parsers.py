@@ -749,6 +749,22 @@ class PayoutRecord:
 O1_RACE_KEY_START = 11
 O1_RACE_KEY_LEN = 16
 
+# データ区分: 位置3 (1バイト) - 時系列対応
+O1_DATA_KBN_START = 2
+O1_DATA_KBN_LEN = 1
+
+# 発表月日時分: 位置28-35 (8バイト) - 時系列キー
+O1_ANNOUNCE_MMDDHHMI_START = 27
+O1_ANNOUNCE_MMDDHHMI_LEN = 8
+
+# 登録頭数: 位置36-37 (2バイト)
+O1_FIELD_SIZE_START = 35
+O1_FIELD_SIZE_LEN = 2
+
+# 単勝票数合計: 位置38-43 (6バイト) - 百円単位
+O1_WIN_POOL_START = 37
+O1_WIN_POOL_LEN = 11
+
 # Win Odds ( 単勝 ): 44-1 = 43. Len 8 (2+4+2). Count 28.
 O1_WIN_START = 43
 O1_WIN_BLOCK_LEN = 8
@@ -763,6 +779,82 @@ O1_PLACE_COUNT = 28
 O1_BRACKET_START = 603
 O1_BRACKET_BLOCK_LEN = 9
 O1_BRACKET_COUNT = 36
+
+
+@dataclass
+class OddsTimeSeriesRecord:
+    """O1レコード: 時系列オッズ対応版"""
+
+    race_id: int
+    data_kbn: int  # 1=中間, 2=前日最終, 3=最終, 4=確定
+    announce_mmddhhmi: str  # 発表月日時分 (MMDDhhmm)
+    horse_no: int
+    win_odds_x10: int  # オッズ×10 (12.3倍 → 123)
+    win_popularity: int | None
+    # ヘッダー情報
+    win_pool_total_100yen: int | None
+
+    @classmethod
+    def parse(cls, payload: str, race_id: int = 0) -> list[OddsTimeSeriesRecord]:
+        """O1レコードをパース（時系列対応版）"""
+        try:
+            b_payload = payload.encode("cp932")
+        except UnicodeEncodeError:
+            b_payload = payload.encode("cp932", errors="replace")
+
+        if len(b_payload) < 962:
+            b_payload = b_payload.ljust(962, b" ")
+
+        results = []
+
+        # データ区分
+        data_kbn = _slice_byte_int(b_payload, O1_DATA_KBN_START, O1_DATA_KBN_LEN)
+
+        # 発表月日時分
+        announce_mmddhhmi = _slice_byte_decode(
+            b_payload, O1_ANNOUNCE_MMDDHHMI_START, O1_ANNOUNCE_MMDDHHMI_LEN
+        )
+        if not announce_mmddhhmi:
+            announce_mmddhhmi = "00000000"
+
+        # 票数合計
+        win_pool_total = _slice_byte_int(b_payload, O1_WIN_POOL_START, O1_WIN_POOL_LEN)
+
+        if race_id == 0:
+            race_key = _slice_byte_decode(b_payload, O1_RACE_KEY_START, O1_RACE_KEY_LEN)
+            if len(race_key) >= 16:
+                try:
+                    year = int(race_key[0:4])
+                    month = int(race_key[4:6])
+                    day = int(race_key[6:8])
+                    track = int(race_key[8:10])
+                    race_no = int(race_key[14:16])
+                    date_int = year * 10000 + month * 100 + day
+                    race_id = date_int * 10000 + track * 100 + race_no
+                except ValueError:
+                    pass
+
+        # Win Odds (28 horses)
+        for i in range(O1_WIN_COUNT):
+            offset = O1_WIN_START + i * O1_WIN_BLOCK_LEN
+            h_no = _slice_byte_int(b_payload, offset, 2)
+            odds_raw = _slice_byte_int(b_payload, offset + 2, 4)
+            pop = _slice_byte_int(b_payload, offset + 6, 2)
+
+            if h_no and h_no > 0 and odds_raw is not None:
+                results.append(
+                    cls(
+                        race_id=race_id,
+                        data_kbn=data_kbn,
+                        announce_mmddhhmi=announce_mmddhhmi,
+                        horse_no=h_no,
+                        win_odds_x10=odds_raw,
+                        win_popularity=pop if pop > 0 else None,
+                        win_pool_total_100yen=win_pool_total if win_pool_total > 0 else None,
+                    )
+                )
+
+        return results
 
 
 @dataclass
@@ -992,6 +1084,757 @@ class HorseMasterRecord:
 
 
 # =============================================================================
+# WH: 馬体重速報 (Horse Weight)
+# =============================================================================
+WH_DATA_KBN_START = 2
+WH_DATA_KBN_LEN = 1
+WH_RACE_KEY_START = 11
+WH_RACE_KEY_LEN = 16
+WH_ANNOUNCE_MMDDHHMI_START = 27
+WH_ANNOUNCE_MMDDHHMI_LEN = 8
+WH_DETAIL_START = 35
+WH_DETAIL_BLOCK_LEN = 8  # 馬番(2) + 体重(3) + 増減符号(1) + 増減(2)
+WH_DETAIL_COUNT = 28
+
+
+@dataclass
+class WHRecord:
+    """WHレコード: 馬体重速報"""
+
+    race_id: int
+    data_kbn: int
+    announce_mmddhhmi: str
+    horse_no: int
+    body_weight_kg: int | None
+    diff_sign: str  # '+', '-', ' '
+    diff_kg: int | None
+
+    @classmethod
+    def parse(cls, payload: str, race_id: int = 0) -> list[WHRecord]:
+        """WHレコードをパース"""
+        try:
+            b_payload = payload.encode("cp932")
+        except UnicodeEncodeError:
+            b_payload = payload.encode("cp932", errors="replace")
+
+        if len(b_payload) < 300:
+            b_payload = b_payload.ljust(300, b" ")
+
+        results = []
+
+        data_kbn = _slice_byte_int(b_payload, WH_DATA_KBN_START, WH_DATA_KBN_LEN)
+        announce_mmddhhmi = _slice_byte_decode(
+            b_payload, WH_ANNOUNCE_MMDDHHMI_START, WH_ANNOUNCE_MMDDHHMI_LEN
+        )
+        if not announce_mmddhhmi:
+            announce_mmddhhmi = "00000000"
+
+        if race_id == 0:
+            race_key = _slice_byte_decode(b_payload, WH_RACE_KEY_START, WH_RACE_KEY_LEN)
+            if len(race_key) >= 16:
+                try:
+                    year = int(race_key[0:4])
+                    month = int(race_key[4:6])
+                    day = int(race_key[6:8])
+                    track = int(race_key[8:10])
+                    race_no = int(race_key[14:16])
+                    date_int = year * 10000 + month * 100 + day
+                    race_id = date_int * 10000 + track * 100 + race_no
+                except ValueError:
+                    pass
+
+        for i in range(WH_DETAIL_COUNT):
+            offset = WH_DETAIL_START + i * WH_DETAIL_BLOCK_LEN
+            h_no = _slice_byte_int(b_payload, offset, 2)
+            weight = _slice_byte_int(b_payload, offset + 2, 3)
+            sign = _slice_byte_decode(b_payload, offset + 5, 1)
+            diff = _slice_byte_int(b_payload, offset + 6, 2)
+
+            if h_no and h_no > 0:
+                results.append(
+                    cls(
+                        race_id=race_id,
+                        data_kbn=data_kbn,
+                        announce_mmddhhmi=announce_mmddhhmi,
+                        horse_no=h_no,
+                        body_weight_kg=weight if weight > 0 else None,
+                        diff_sign=sign if sign else " ",
+                        diff_kg=diff if diff > 0 else None,
+                    )
+                )
+
+        return results
+
+
+# =============================================================================
+# HC: 坂路調教 (SLOP)  ※レコード長60バイト (JV-Data仕様書 4.9.0.1)
+# =============================================================================
+HC_DATA_KBN = 2  # pos3, len1
+HC_MAKE_DATE = 3  # pos4, len8
+HC_TRAINING_CENTER = 11  # pos12, len1 (0:美浦 1:栗東) ※他とコード体系が異なる
+HC_TRAINING_DATE = 12  # pos13, len8
+HC_TRAINING_TIME = 20  # pos21, len4 (hhmm)
+HC_HORSE_ID = 24  # pos25, len10
+HC_TOTAL_4F = 34  # pos35, len4 (999.9秒)
+HC_LAP_4F = 38  # pos39, len3 (99.9秒)
+HC_TOTAL_3F = 41  # pos42, len4
+HC_LAP_3F = 45  # pos46, len3
+HC_TOTAL_2F = 48  # pos49, len4
+HC_LAP_2F = 52  # pos53, len3
+HC_LAP_1F = 55  # pos56, len3
+
+# メモ: ラップタイム計算
+# 4F合計 - 3F合計 = ラップ4F (800m-600m)
+# 3F合計 - 2F合計 = ラップ3F (600m-400m)
+# 2F合計 - 1F(Lap) = ラップ2F (400m-200m) ※仕様書の項目名注意
+# 1F(Lap) = ラップ1F (200m-0m)
+
+
+def _parse_time_tenth(b: bytes, start: int, length: int = 3) -> float | None:
+    """0.1秒単位の数値文字列を秒に変換 (例: 520→52.0, 0635→63.5)"""
+    # 60バイト固定長はもともとASCIIしか含まないはずだが、
+    # 念のためバイト列で処理
+    raw = b[start : start + length]
+    digits = raw.strip()
+    # "000" や "0000" は欠損値または計測不能
+    try:
+        val = int(digits)
+        if val == 0:
+            return None
+        return val / 10.0
+    except (ValueError, TypeError):
+        return None
+
+
+@dataclass
+class HCRecord:
+    """HCレコード: 坂路調教 (60バイト固定長)"""
+
+    horse_id: str
+    training_date: date | None
+    data_kbn: int
+    training_center: str  # 0:美浦 1:栗東
+    training_time: str  # hhmm
+    total_4f: float | None
+    lap_4f: float | None
+    total_3f: float | None
+    lap_3f: float | None
+    total_2f: float | None
+    lap_2f: float | None
+    lap_1f: float | None
+    payload_raw: str
+
+    @classmethod
+    def parse(cls, payload: str) -> HCRecord:
+        """HCレコードをパース"""
+        # 60バイト固定長はASCII前提だが、一応CP932エンコードしてバイト列で扱う
+        try:
+            b = payload.encode("cp932")
+        except UnicodeEncodeError:
+            b = payload.encode("cp932", errors="replace")
+
+        # 長さが足りない場合はスペース埋め
+        if len(b) < 60:
+            b = b.ljust(60, b" ")
+
+        data_kbn = _slice_byte_int(b, HC_DATA_KBN, 1)
+        training_center = _slice_byte_decode(b, HC_TRAINING_CENTER, 1)
+        training_date = _slice_date(payload, HC_TRAINING_DATE)
+        training_time = _slice_byte_decode(b, HC_TRAINING_TIME, 4)
+        horse_id = _slice_byte_decode(b, HC_HORSE_ID, 10)
+
+        return cls(
+            horse_id=horse_id,
+            training_date=training_date,
+            data_kbn=data_kbn,
+            training_center=training_center,
+            training_time=training_time,
+            total_4f=_parse_time_tenth(b, HC_TOTAL_4F, 4),
+            lap_4f=_parse_time_tenth(b, HC_LAP_4F, 3),
+            total_3f=_parse_time_tenth(b, HC_TOTAL_3F, 4),
+            lap_3f=_parse_time_tenth(b, HC_LAP_3F, 3),
+            total_2f=_parse_time_tenth(b, HC_TOTAL_2F, 4),
+            lap_2f=_parse_time_tenth(b, HC_LAP_2F, 3),
+            lap_1f=_parse_time_tenth(b, HC_LAP_1F, 3),
+            payload_raw=payload,
+        )
+
+
+# =============================================================================
+# WC: ウッド調教 (WOOD) ※レコード長105バイト (JV-Data仕様書 4.9.0.1)
+# =============================================================================
+WC_DATA_KBN = 2  # pos3, len1
+WC_TRAINING_CENTER = 11  # pos12, len1 (0:美浦 1:栗東)
+WC_TRAINING_DATE = 12  # pos13, len8
+WC_TRAINING_TIME = 20  # pos21, len4 (hhmm)
+WC_HORSE_ID = 24  # pos25, len10
+WC_COURSE = 34  # pos35, len1 (0:A 1:B 2:C 3:D 4:E)
+WC_DIRECTION = 35  # pos36, len1 (0:右 1:左)
+# pos37は予備(1byte)
+WC_Unused = 36  # skipping pos 37? 0-based index 36.
+
+# タイムデータ開始位置 (10Fから2Fまでのペア + 1Fラップ)
+# 10F: Total(4) Lap(3)
+# 9F: Total(4) Lap(3)
+# ...
+WC_TIME_START = 37  # pos38
+
+
+@dataclass
+class WCRecord:
+    """WCレコード: ウッド調教 (105バイト固定長)"""
+
+    horse_id: str
+    training_date: date | None
+    data_kbn: int
+    training_center: str  # 0:美浦 1:栗東
+    training_time: str  # hhmm
+    course: str  # 0-4
+    direction: str  # 0:右 1:左
+
+    # 10F-3FまではOptional (計測されないハロンもあるため)
+    total_10f: float | None
+    lap_10f: float | None
+    total_9f: float | None
+    lap_9f: float | None
+    total_8f: float | None
+    lap_8f: float | None
+    total_7f: float | None
+    lap_7f: float | None
+    total_6f: float | None
+    lap_6f: float | None
+    total_5f: float | None
+    lap_5f: float | None
+    total_4f: float | None
+    lap_4f: float | None
+    total_3f: float | None
+    lap_3f: float | None
+    total_2f: float | None
+    lap_2f: float | None
+    lap_1f: float | None
+    payload_raw: str
+
+    @classmethod
+    def parse(cls, payload: str) -> WCRecord:
+        """WCレコードをパース"""
+        # 105バイト固定長、ASCII前提
+        try:
+            b = payload.encode("cp932")
+        except UnicodeEncodeError:
+            b = payload.encode("cp932", errors="replace")
+
+        if len(b) < 105:
+            b = b.ljust(105, b" ")
+
+        data_kbn = _slice_byte_int(b, WC_DATA_KBN, 1)
+        training_center = _slice_byte_decode(b, WC_TRAINING_CENTER, 1)
+        training_date = _slice_date(payload, WC_TRAINING_DATE)
+        training_time = _slice_byte_decode(b, WC_TRAINING_TIME, 4)
+        horse_id = _slice_byte_decode(b, WC_HORSE_ID, 10)
+        course = _slice_byte_decode(b, WC_COURSE, 1)
+        direction = _slice_byte_decode(b, WC_DIRECTION, 1)
+
+        # タイムパース (pos 37から開始)
+        # 10F Total(4) Lap(3) -> 7 bytes
+        vals = []
+        curr = WC_TIME_START
+        # 10F down to 2F (9 iterations)
+        for _ in range(9):
+            # Total
+            vals.append(_parse_time_tenth(b, curr, 4))
+            curr += 4
+            # Lap
+            vals.append(_parse_time_tenth(b, curr, 3))
+            curr += 3
+
+        # 1F Lap (3 bytes)
+        vals.append(_parse_time_tenth(b, curr, 3))
+
+        return cls(
+            horse_id=horse_id,
+            training_date=training_date,
+            data_kbn=data_kbn,
+            training_center=training_center,
+            training_time=training_time,
+            course=course,
+            direction=direction,
+            total_10f=vals[0],
+            lap_10f=vals[1],
+            total_9f=vals[2],
+            lap_9f=vals[3],
+            total_8f=vals[4],
+            lap_8f=vals[5],
+            total_7f=vals[6],
+            lap_7f=vals[7],
+            total_6f=vals[8],
+            lap_6f=vals[9],
+            total_5f=vals[10],
+            lap_5f=vals[11],
+            total_4f=vals[12],
+            lap_4f=vals[13],
+            total_3f=vals[14],
+            lap_3f=vals[15],
+            total_2f=vals[16],
+            lap_2f=vals[17],
+            lap_1f=vals[18],
+            payload_raw=payload,
+        )
+
+
+# =============================================================================
+# CK: 出走別着度数 (SNPN) ※レコード長6870バイト (JV-Data仕様書 4.9.0.1)
+# =============================================================================
+CK_DATA_KBN = 2  # pos3, len1
+CK_MAKE_DATE = 3  # pos4, len8
+CK_YEAR = 11  # pos12, len4
+CK_MONTHDAY = 15  # pos16, len4
+CK_COURSE = 19  # pos20, len2
+CK_KAI = 21  # pos22, len2
+CK_NICHI = 23  # pos24, len2
+CK_RACE_NO = 25  # pos26, len2
+CK_HORSE_ID = 27  # pos28, len10
+CK_HORSE_NAME = 37  # pos38, len36
+CK_PRIZE_START = 73  # pos74 - Prize fields
+# Stats start
+CK_STATS_HORSE_START = 127  # pos128
+
+# Jockey
+CK_JOCKEY_CODE = 1384  # pos1385, len5
+CK_JOCKEY_STATS_START = 1423  # pos1424
+
+# Trainer
+CK_TRAINER_CODE = 3863  # pos3864, len5
+CK_TRAINER_STATS_START = 3902  # pos3903
+
+# Owner
+CK_OWNER_CODE = 6342  # pos6343, len6
+CK_OWNER_STATS_START = 6476  # pos6477
+
+# Breeder
+CK_BREEDER_CODE = 6596  # pos6597, len8
+CK_BREEDER_STATS_START = 6748  # pos6749
+
+
+@dataclass
+class CKRecord:
+    """CKレコード: 出走別着度数 (SNPN 6870バイト)"""
+
+    # Keys
+    kaisai_kai: str
+    kaisai_nichi: str
+    race_no: str  # Keep explicit str
+
+    # Human Keys
+    jockey_code: str
+    trainer_code: str
+    owner_code: str
+    breeder_code: str
+
+    # Horse Stats (Cumulative)
+    # [1着, 2着, 3着, 4着, 5着, 6着以下]
+    counts_total: list[int]  # 総合
+    counts_central: list[int]  # 中央
+
+    payload_raw: str
+
+    @classmethod
+    def parse(cls, payload: str) -> CKRecord:
+        try:
+            b = payload.encode("cp932")
+        except UnicodeEncodeError:
+            b = payload.encode("cp932", errors="replace")
+
+        # 6870バイトだが、短い場合パディング
+        if len(b) < 6870:
+            b = b.ljust(6870, b" ")
+
+        # keys
+        make_date = _slice_date(payload, CK_MAKE_DATE)
+
+        year = _slice_byte_decode(b, CK_YEAR, 4)
+        md = _slice_byte_decode(b, CK_MONTHDAY, 4)
+        course = _slice_byte_decode(b, CK_COURSE, 2)
+        kai = _slice_byte_decode(b, CK_KAI, 2)
+        nichi = _slice_byte_decode(b, CK_NICHI, 2)
+        race_no = _slice_byte_decode(b, CK_RACE_NO, 2)
+
+        race_id = f"{year}{md}{course}{race_no}"  # Simplified RaceID
+
+        horse_id = _slice_byte_decode(b, CK_HORSE_ID, 10)
+        horse_name = _slice_byte_decode(b, CK_HORSE_NAME, 36)
+
+        jockey_code = _slice_byte_decode(b, CK_JOCKEY_CODE, 5)
+        trainer_code = _slice_byte_decode(b, CK_TRAINER_CODE, 5)
+        owner_code = _slice_byte_decode(b, CK_OWNER_CODE, 6)
+        breeder_code = _slice_byte_decode(b, CK_BREEDER_CODE, 8)
+
+        # Helper for counts
+        def _get_counts(offset, item_len, buckets=6):
+            res = []
+            curr = offset
+            for _ in range(buckets):
+                v = _slice_byte_int(b, curr, item_len) or 0
+                res.append(v)
+                curr += item_len
+            return res
+
+        # Horse Stats: 6 buckets * 3 bytes
+        counts_total = _get_counts(CK_STATS_HORSE_START, 3)  # Pos 128
+        counts_central = _get_counts(CK_STATS_HORSE_START + 18, 3)  # Pos 146
+
+        return cls(
+            race_id=race_id,
+            horse_id=horse_id,
+            horse_name=horse_name,
+            make_date=make_date,
+            kaisai_kai=kai,
+            kaisai_nichi=nichi,
+            race_no=race_no,
+            jockey_code=jockey_code,
+            trainer_code=trainer_code,
+            owner_code=owner_code,
+            breeder_code=breeder_code,
+            counts_total=counts_total,
+            counts_central=counts_central,
+            payload_raw=payload,
+        )
+
+    def get_full_stats(self) -> dict:
+        """Extract all detailed stats for Core/Mart tables"""
+        # Re-encode payload to bytes safely
+        try:
+            b = self.payload_raw.encode("cp932")
+        except UnicodeEncodeError:
+            b = self.payload_raw.encode("cp932", errors="replace")
+        if len(b) < 6870:
+            b = b.ljust(6870, b" ")
+
+        def _get_counts(offset, item_len, buckets=6):
+            res = []
+            curr = offset
+            for _ in range(buckets):
+                v = _slice_byte_int(b, curr, item_len) or 0
+                res.append(v)
+                curr += item_len
+            return res
+
+        # Horse Stats Offsets (from PDF)
+        # Total: 128 (idx 127) -> Already parsed
+        # Central: 146 (idx 145) -> Already parsed
+        # 20. TurfStr: 164 (idx 163)
+        # 21. TurfRight: 182
+        # ...
+        # Distance: 39 (idx 505)
+
+        # We need specific blocks for Mart 45 cols
+        # Turf Right/Left/Straight
+        turf_str = _get_counts(163, 3)
+        turf_right = _get_counts(181, 3)
+        turf_left = _get_counts(199, 3)
+
+        dirt_str = _get_counts(217, 3)
+        dirt_right = _get_counts(235, 3)
+        dirt_left = _get_counts(253, 3)
+
+        # Condition (27-38) Start 290 (idx 289)
+        # 27 芝良
+        turf_good = _get_counts(289, 3)
+        turf_soft = _get_counts(307, 3)
+        turf_heavy = _get_counts(325, 3)
+        turf_bad = _get_counts(343, 3)
+
+        dirt_good = _get_counts(361, 3)
+        dirt_soft = _get_counts(379, 3)
+        dirt_heavy = _get_counts(397, 3)
+        dirt_bad = _get_counts(415, 3)
+
+        # Distance (39-56) Start 506 (idx 505)
+        # 39 芝1200下 (505)
+        # 40 芝1400
+        # 41 芝1600 -> "16down" includes 1200, 1400, 1600 ??
+        # Mart definition: "~1600", "1601-2200", "2201~"
+        # CK has: 1200, 1201-1400, 1401-1600 -> These 3 form "~1600"
+        # 1601-1800, 1801-2000, 2001-2200 -> These 3 form "1601-2200"
+        # 2201-2400, 2401-2800, 2801+ -> "2201~"
+
+        # We store raw arrays in Core, and aggregate in Mart (or Python)
+        # Here we extract blocks.
+
+        # Style (87) Start 1370 (idx 1369). 4 items * 3 bytes = 12 bytes.
+        # Nige, Senko, Sashi, Oikomi
+        style_nige = _slice_byte_int(b, 1369, 3)
+        style_senko = _slice_byte_int(b, 1372, 3)
+        style_sashi = _slice_byte_int(b, 1375, 3)
+        style_oikomi = _slice_byte_int(b, 1378, 3)
+
+        # Registered Races
+        registered_races = _slice_byte_int(b, 1381, 3)
+
+        # Prize Info (Jockey/Trainer/Owner/Breeder)
+        # Jockey: 91b-e. Pos 1424 (idx 1423). Year/Cum repeats.
+        # Year: offset 1423 -> [Year(4), Flat(10), Obs(10), FlatAdd(10), ObsAdd(10)]
+        # We need FlatPrizeTotal = Flat + FlatAdd?
+        # Item 91b "平地本賞金"
+        # Item 91d "平地付加賞金"
+
+        def extract_human_prize(start_offset):
+            # Returns {year: {flat: X, obs: Y}, cum: {flat: X, obs: Y}}
+            # Block 1 (Year)
+            off = start_offset
+            y_flat = (_slice_byte_int(b, off + 4, 10) or 0) + (
+                _slice_byte_int(b, off + 24, 10) or 0
+            )
+            y_obs = (_slice_byte_int(b, off + 14, 10) or 0) + (
+                _slice_byte_int(b, off + 34, 10) or 0
+            )
+
+            # Block 2 (Cum) - Offset + 1220 bytes ??
+            # WAIT! Jockey/Trainer block is 1220 bytes.
+            # 91 <騎手本年･累計成績情報> 1424 2 1220 2440
+            # So Year block is 1424. Cum block is 1424 + 1220 = 2644.
+
+            off2 = start_offset + 1220
+            c_flat = (_slice_byte_int(b, off2 + 4, 10) or 0) + (
+                _slice_byte_int(b, off2 + 24, 10) or 0
+            )
+            c_obs = (_slice_byte_int(b, off2 + 14, 10) or 0) + (
+                _slice_byte_int(b, off2 + 34, 10) or 0
+            )
+
+            return {"year_flat": y_flat, "year_obs": y_obs, "cum_flat": c_flat, "cum_obs": c_obs}
+
+        # Owner/Breeder Block is smaller (60 bytes)
+        # 98 <本年･累計> 6477 2 60 120
+        # a, b, c, d. (Year(4), Main(10), Add(10), Counts(36))
+
+        def extract_ob_prize(start_offset):
+            # Year
+            off = start_offset
+            y_total = (_slice_byte_int(b, off + 4, 10) or 0) + (
+                _slice_byte_int(b, off + 14, 10) or 0
+            )
+
+            # Cum (+60)
+            off2 = start_offset + 60
+            c_total = (_slice_byte_int(b, off2 + 4, 10) or 0) + (
+                _slice_byte_int(b, off2 + 14, 10) or 0
+            )
+
+            return {"year": y_total, "cum": c_total}
+
+        j_prize = extract_human_prize(CK_JOCKEY_STATS_START)
+        t_prize = extract_human_prize(CK_TRAINER_STATS_START)
+        o_prize = extract_ob_prize(CK_OWNER_STATS_START)
+        b_prize = extract_ob_prize(CK_BREEDER_STATS_START)
+
+        return {
+            # Core specific structures
+            "finish_counts": {
+                "overall": self.counts_total,
+                "central": self.counts_central,
+                "turf_good": turf_good,
+                "turf_soft": turf_soft,
+                "turf_heavy": turf_heavy,
+                "turf_bad": turf_bad,
+                "dirt_good": dirt_good,
+                "dirt_soft": dirt_soft,
+                "dirt_heavy": dirt_heavy,
+                "dirt_bad": dirt_bad,
+                "turf_right": turf_right,
+                "turf_left": turf_left,
+                "turf_str": turf_str,
+                "dirt_right": dirt_right,
+                "dirt_left": dirt_left,
+                "dirt_str": dirt_str,
+                # Store distance raw arrays if needed?
+                # For mart we aggregate.
+            },
+            "style_counts": {
+                "nige": style_nige,
+                "senko": style_senko,
+                "sashi": style_sashi,
+                "oikomi": style_oikomi,
+            },
+            "registered_races": registered_races,
+            "entity_prize": {
+                "jockey": j_prize,
+                "trainer": t_prize,
+                "owner": o_prize,
+                "breeder": b_prize,
+            },
+        }
+
+
+# =============================================================================
+# DM: タイム型マイニング (MING)
+# =============================================================================
+DM_DATA_KBN_START = 2
+DM_DATA_KBN_LEN = 1
+DM_RACE_KEY_START = 11
+DM_RACE_KEY_LEN = 16
+
+
+@dataclass
+class DMRecord:
+    """DMレコード: タイム型マイニング"""
+
+    race_id: int
+    horse_no: int
+    data_kbn: int
+    dm_time_x10: int | None
+    dm_rank: int | None
+    payload_raw: str
+
+    @classmethod
+    def parse(cls, payload: str, race_id: int = 0) -> DMRecord:
+        """DMレコードをパース（簡易版）"""
+        try:
+            b_payload = payload.encode("cp932")
+        except UnicodeEncodeError:
+            b_payload = payload.encode("cp932", errors="replace")
+
+        if len(b_payload) < 50:
+            b_payload = b_payload.ljust(50, b" ")
+
+        data_kbn = _slice_byte_int(b_payload, DM_DATA_KBN_START, DM_DATA_KBN_LEN)
+
+        if race_id == 0:
+            race_key = _slice_byte_decode(b_payload, DM_RACE_KEY_START, DM_RACE_KEY_LEN)
+            if len(race_key) >= 16:
+                try:
+                    year = int(race_key[0:4])
+                    month = int(race_key[4:6])
+                    day = int(race_key[6:8])
+                    track = int(race_key[8:10])
+                    race_no = int(race_key[14:16])
+                    date_int = year * 10000 + month * 100 + day
+                    race_id = date_int * 10000 + track * 100 + race_no
+                except ValueError:
+                    pass
+
+        return cls(
+            race_id=race_id,
+            horse_no=0,
+            data_kbn=data_kbn,
+            dm_time_x10=None,
+            dm_rank=None,
+            payload_raw=payload,
+        )
+
+
+# =============================================================================
+# TM: 対戦型マイニング (MING)
+# =============================================================================
+TM_DATA_KBN_START = 2
+TM_DATA_KBN_LEN = 1
+TM_RACE_KEY_START = 11
+TM_RACE_KEY_LEN = 16
+
+
+@dataclass
+class TMRecord:
+    """TMレコード: 対戦型マイニング"""
+
+    race_id: int
+    horse_no: int
+    data_kbn: int
+    tm_score: int | None
+    tm_rank: int | None
+    payload_raw: str
+
+    @classmethod
+    def parse(cls, payload: str, race_id: int = 0) -> TMRecord:
+        """TMレコードをパース（簡易版）"""
+        try:
+            b_payload = payload.encode("cp932")
+        except UnicodeEncodeError:
+            b_payload = payload.encode("cp932", errors="replace")
+
+        if len(b_payload) < 50:
+            b_payload = b_payload.ljust(50, b" ")
+
+        data_kbn = _slice_byte_int(b_payload, TM_DATA_KBN_START, TM_DATA_KBN_LEN)
+
+        if race_id == 0:
+            race_key = _slice_byte_decode(b_payload, TM_RACE_KEY_START, TM_RACE_KEY_LEN)
+            if len(race_key) >= 16:
+                try:
+                    year = int(race_key[0:4])
+                    month = int(race_key[4:6])
+                    day = int(race_key[6:8])
+                    track = int(race_key[8:10])
+                    race_no = int(race_key[14:16])
+                    date_int = year * 10000 + month * 100 + day
+                    race_id = date_int * 10000 + track * 100 + race_no
+                except ValueError:
+                    pass
+
+        return cls(
+            race_id=race_id,
+            horse_no=0,
+            data_kbn=data_kbn,
+            tm_score=None,
+            tm_rank=None,
+            payload_raw=payload,
+        )
+
+
+# =============================================================================
+# イベント変更 (WE/AV/JC/TC/CC)
+# =============================================================================
+EVENT_DATA_KBN_START = 2
+EVENT_DATA_KBN_LEN = 1
+EVENT_RACE_KEY_START = 11
+EVENT_RACE_KEY_LEN = 16
+
+
+@dataclass
+class EventChangeRecord:
+    """WE/AV/JC/TC/CCレコード: 当日変更"""
+
+    record_type: str  # 'WE', 'AV', 'JC', 'TC', 'CC'
+    race_id: int
+    data_kbn: int
+    payload_raw: str
+
+    @classmethod
+    def parse(cls, payload: str, race_id: int = 0) -> EventChangeRecord:
+        """イベント変更レコードをパース（簡易版）"""
+        rec_type = payload[:2] if len(payload) >= 2 else ""
+
+        try:
+            b_payload = payload.encode("cp932")
+        except UnicodeEncodeError:
+            b_payload = payload.encode("cp932", errors="replace")
+
+        if len(b_payload) < 50:
+            b_payload = b_payload.ljust(50, b" ")
+
+        data_kbn = _slice_byte_int(b_payload, EVENT_DATA_KBN_START, EVENT_DATA_KBN_LEN)
+
+        if race_id == 0:
+            race_key = _slice_byte_decode(b_payload, EVENT_RACE_KEY_START, EVENT_RACE_KEY_LEN)
+            if len(race_key) >= 16:
+                try:
+                    year = int(race_key[0:4])
+                    month = int(race_key[4:6])
+                    day = int(race_key[6:8])
+                    track = int(race_key[8:10])
+                    race_no = int(race_key[14:16])
+                    date_int = year * 10000 + month * 100 + day
+                    race_id = date_int * 10000 + track * 100 + race_no
+                except ValueError:
+                    pass
+
+        return cls(
+            record_type=rec_type,
+            race_id=race_id,
+            data_kbn=data_kbn,
+            payload_raw=payload,
+        )
+
+
+# =============================================================================
 # パーサー ディスパッチャ
 # =============================================================================
 PARSERS: dict[str, Callable] = {
@@ -1001,6 +1844,23 @@ PARSERS: dict[str, Callable] = {
     "O1": OddsRecord.parse,
     "JG": HorseExclusionRecord.parse,
     "UM": HorseMasterRecord.parse,
+    # 新規追加
+    "WH": WHRecord.parse,
+    "HC": HCRecord.parse,
+    "WC": WCRecord.parse,
+    "CK": CKRecord.parse,
+    "DM": DMRecord.parse,
+    "TM": TMRecord.parse,
+    "WE": EventChangeRecord.parse,
+    "AV": EventChangeRecord.parse,
+    "JC": EventChangeRecord.parse,
+    "TC": EventChangeRecord.parse,
+    "CC": EventChangeRecord.parse,
+}
+
+# 時系列オッズ用（別途使用）
+PARSERS_TIMESERIES: dict[str, Callable] = {
+    "O1": OddsTimeSeriesRecord.parse,
 }
 
 

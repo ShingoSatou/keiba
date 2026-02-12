@@ -6,20 +6,44 @@ JV-Linkからデータを取得し、JSONLファイルに出力します。
 
 使用方法:
     # 初回セットアップ (過去10年分を取得)
-    .venv32\Scripts\python.exe scripts/extract_jvlink.py --from-date 20160101 --option 4
+    .venv32\\Scripts\\python.exe scripts/extract_jvlink.py --from-date 20160101 --option 4
 
     # 日々の更新 (過去1年分)
-    .venv32\\Scripts\\python.exe scripts/extract_jvlink.py --from-date 20250101 --option 1
+    .venv32\\Scripts\\python.exe scripts/extract_jvlink.py \\
+        --from-date 20250101 --option 1
 
     # 馬マスタ(UM)のみ取得 (DIFFを開いてUMでフィルタ)
     .venv32\\Scripts\\python.exe scripts/extract_jvlink.py \\
-        --dataspec DIFF --from-date 20160101 --option 4 --record-filter UM
+        --dataspec DIFF --from-date 20160101 \\
+        --option 4 --record-filter UM
+
+    # 調教データ(坂路)
+    .venv32\\Scripts\\python.exe scripts/extract_jvlink.py \\
+        --dataspec SLOP --from-date 20160101 --option 4
+
+    # 調教データ(ウッド)
+    .venv32\\Scripts\\python.exe scripts/extract_jvlink.py \\
+        --dataspec WOOD --from-date 20160101 --option 4
+
+    # マイニング
+    .venv32\\Scripts\\python.exe scripts/extract_jvlink.py \\
+        --dataspec MING --from-date 20160101 --option 4
 
 Option説明:
     1: 通常データ (過去1年分、日々の更新用)
     2: 非蓄積系 (速報データ用)
     3: セットアップ (過去データ一括取得、ダイアログあり)
     4: セットアップ (過去データ一括取得、ダイアログなし) ★初回推奨
+
+dataspec一覧:
+    RACE: レース基本情報 (RA/SE/HR/O1/UM/KS/CH/JG)
+    DIFF: 更新差分
+    SLOP: 坂路調教 (HC)
+    WOOD: ウッド調教 (WC)
+    SNAP: 出走別着度数 (CK)
+    MING: マイニング (DM/TM)
+    YSCH: 開催スケジュール (YS)
+    COMM: コース情報 (CS)
 
 出力:
     data/{dataspec}_{timestamp}.jsonl
@@ -31,6 +55,7 @@ import argparse
 import json
 import sys
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 
@@ -86,8 +111,6 @@ def jv_open_with_logging(jv, dataspec: str, from_date: str, option: int):
     # JVOpen(dataspec, fromtime, option, readcount, downloadcount, lastfiletimestamp)
     # win32com では ダミー引数 (0, 0, "") を渡し、戻り値タプルで out パラメータを受け取る
     ret = jv.JVOpen(dataspec, from_date, option, 0, 0, "")
-
-    print(f"\n   [DEBUG] JVOpen生戻り値: {ret} (type={type(ret).__name__})")
 
     # 戻り値の解析: (rc_open, readcount, downloadcount, lastfiletimestamp)
     if isinstance(ret, tuple):
@@ -176,11 +199,6 @@ def wait_for_download(jv, downloadcount: int, timeout_sec: int = 3600):
         ret = jv.JVStatus()
         check_count += 1
 
-        # 最初の5回は生の戻り値をログ出力
-        if check_count <= 5:
-            ret_type = type(ret).__name__
-            print(f"\n   [DEBUG] JVStatus #{check_count}: {ret} ({ret_type})")
-
         if isinstance(ret, tuple):
             downloaded = ret[0]
         else:
@@ -235,31 +253,17 @@ def extract_records(
             print(f"\n   最大レコード数 ({max_records}) に達しました")
             break
 
-        # 最初の5回は呼び出し前ログ
-        if read_attempts < 5:
-            print(f"   [DEBUG] JVRead #{read_attempts + 1} 呼び出し中...", flush=True)
-
         try:
             # JVRead(buff, size, filename)
             # win32com では ダミー引数 ("", 110000, "") を渡し、戻り値タプルで受け取る
             # 110000 は公式サンプルのバッファサイズ
             ret = jv.JVRead("", 110000, "")
         except Exception as e:
-            import traceback
-
             print(f"\n❌ JVRead 例外発生: {e}")
             traceback.print_exc()
             break
 
         read_attempts += 1
-        print(f"   [DEBUG] JVRead #{read_attempts} 完了", flush=True)
-
-        # 最初の10回はデバッグ出力
-        if read_attempts <= 10:
-            print(f"\n   [DEBUG] JVRead #{read_attempts}: ret={ret} (type={type(ret).__name__})")
-            if isinstance(ret, tuple) and len(ret) > 1:
-                buff_preview = str(ret[1])[:50] if ret[1] else "(empty)"
-                print(f"            buff preview: {buff_preview!r}")
 
         if isinstance(ret, tuple):
             res = ret[0]
@@ -305,8 +309,6 @@ def extract_records(
         elif res == -1:
             # ファイル切替
             file_switches += 1
-            if file_switches <= 5:
-                print(f"\n   [DEBUG] ファイル切替 #{file_switches}")
             continue
         elif res == -3:
             # ダウンロード中 - 待機
