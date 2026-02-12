@@ -6,20 +6,44 @@ JV-Linkからデータを取得し、JSONLファイルに出力します。
 
 使用方法:
     # 初回セットアップ (過去10年分を取得)
-    .venv32\Scripts\python.exe scripts/extract_jvlink.py --from-date 20160101 --option 4
+    .venv32\\Scripts\\python.exe scripts/extract_jvlink.py --from-date 20160101 --option 4
 
     # 日々の更新 (過去1年分)
-    .venv32\\Scripts\\python.exe scripts/extract_jvlink.py --from-date 20250101 --option 1
+    .venv32\\Scripts\\python.exe scripts/extract_jvlink.py \\
+        --from-date 20250101 --option 1
 
     # 馬マスタ(UM)のみ取得 (DIFFを開いてUMでフィルタ)
     .venv32\\Scripts\\python.exe scripts/extract_jvlink.py \\
-        --dataspec DIFF --from-date 20160101 --option 4 --record-filter UM
+        --dataspec DIFF --from-date 20160101 \\
+        --option 4 --record-filter UM
+
+    # 調教データ(坂路)
+    .venv32\\Scripts\\python.exe scripts/extract_jvlink.py \\
+        --dataspec SLOP --from-date 20160101 --option 4
+
+    # 調教データ(ウッド)
+    .venv32\\Scripts\\python.exe scripts/extract_jvlink.py \\
+        --dataspec WOOD --from-date 20160101 --option 4
+
+    # マイニング
+    .venv32\\Scripts\\python.exe scripts/extract_jvlink.py \\
+        --dataspec MING --from-date 20160101 --option 4
 
 Option説明:
     1: 通常データ (過去1年分、日々の更新用)
     2: 非蓄積系 (速報データ用)
     3: セットアップ (過去データ一括取得、ダイアログあり)
     4: セットアップ (過去データ一括取得、ダイアログなし) ★初回推奨
+
+dataspec一覧:
+    RACE: レース基本情報 (RA/SE/HR/O1/UM/KS/CH/JG)
+    DIFF: 更新差分
+    SLOP: 坂路調教 (HC)
+    WOOD: ウッド調教 (WC)
+    SNAP: 出走別着度数 (CK)
+    MING: マイニング (DM/TM)
+    YSCH: 開催スケジュール (YS)
+    COMM: コース情報 (CS)
 
 出力:
     data/{dataspec}_{timestamp}.jsonl

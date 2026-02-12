@@ -1,7 +1,7 @@
-# データ設計ドキュメント
+# データ設計めも
 
 ## 概要
-JRA-VAN Data Lab. (JV-Link) から取得するデータの設計方針。
+JRA-VAN Data Lab. (JV-Link) から取得するデータの設計めも。
 
 ---
 
@@ -139,7 +139,7 @@ horse_id = TEXT型 (血統登録番号)
 **解決策**:
 1. `jockey_id`, `trainer_id` を NULL許容
 2. `core.horse`, `core.race` へ自動Stub登録
-3. 生値カラム (`trainer_code_raw`, `jockey_code_raw` 等) で元データ保持
+3. 生値カラム（`trainer_code_raw`, `jockey_code_raw` 等）で元データ保持（※現状はスキーマ/ローダ整合が必要）
 
 ---
 
@@ -149,15 +149,16 @@ horse_id = TEXT型 (血統登録番号)
 # パーサーテスト
 uv run pytest tests/test_parsers.py -v
 
-# DB統計確認
-uv run python scripts/analyze_db_stats.py
+# パーサースモーク（補助）
+uv run python scripts/verify_parsers.py
 
-# スキーマ確認
-uv run python scripts/check_schema.py
+# DBロード（例）
+uv run python scripts/load_to_db.py --input-dir data/
 ```
 
 ---
 
 ## 5. 参考資料
-- `docs/JV-link/JV-Data仕様書_4.9.0.1.xlsx` (コード表含む)
+- `docs/JV-link/JV-Data仕様書_4.9.0.1.pdf`
+- `docs/JV-link/JV-Data仕様書_4.9.0.1.docling.md`（検索・参照用）
 - `docs/JV-link/JV-Linkインターフェース仕様書_4.9.0.1(Win).pdf`
