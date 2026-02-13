@@ -1419,10 +1419,18 @@ CK_BREEDER_STATS_START = 6748  # pos6749
 class CKRecord:
     """CKレコード: 出走別着度数 (SNPN 6870バイト)"""
 
-    # Keys
-    kaisai_kai: str
-    kaisai_nichi: str
-    race_no: str  # Keep explicit str
+    data_kbn: int
+    make_date: date | None
+
+    # CKキー
+    kaisai_year: int
+    kaisai_md: str
+    track_cd: str
+    kaisai_kai: int
+    kaisai_nichi: int
+    race_no: int
+    horse_id: str
+    horse_name: str
 
     # Human Keys
     jockey_code: str
@@ -1448,17 +1456,15 @@ class CKRecord:
         if len(b) < 6870:
             b = b.ljust(6870, b" ")
 
-        # keys
+        data_kbn = _slice_byte_int(b, CK_DATA_KBN, 1)
         make_date = _slice_date(payload, CK_MAKE_DATE)
 
-        year = _slice_byte_decode(b, CK_YEAR, 4)
-        md = _slice_byte_decode(b, CK_MONTHDAY, 4)
-        course = _slice_byte_decode(b, CK_COURSE, 2)
-        kai = _slice_byte_decode(b, CK_KAI, 2)
-        nichi = _slice_byte_decode(b, CK_NICHI, 2)
-        race_no = _slice_byte_decode(b, CK_RACE_NO, 2)
-
-        race_id = f"{year}{md}{course}{race_no}"  # Simplified RaceID
+        kaisai_year = _slice_byte_int(b, CK_YEAR, 4)
+        kaisai_md = _slice_byte_decode(b, CK_MONTHDAY, 4)
+        track_cd = _slice_byte_decode(b, CK_COURSE, 2)
+        kaisai_kai = _slice_byte_int(b, CK_KAI, 2)
+        kaisai_nichi = _slice_byte_int(b, CK_NICHI, 2)
+        race_no = _slice_byte_int(b, CK_RACE_NO, 2)
 
         horse_id = _slice_byte_decode(b, CK_HORSE_ID, 10)
         horse_name = _slice_byte_decode(b, CK_HORSE_NAME, 36)
@@ -1483,12 +1489,15 @@ class CKRecord:
         counts_central = _get_counts(CK_STATS_HORSE_START + 18, 3)  # Pos 146
 
         return cls(
-            race_id=race_id,
+            data_kbn=data_kbn,
+            make_date=make_date,
+            kaisai_year=kaisai_year,
+            kaisai_md=kaisai_md,
+            track_cd=track_cd,
+            kaisai_kai=kaisai_kai,
+            kaisai_nichi=kaisai_nichi,
             horse_id=horse_id,
             horse_name=horse_name,
-            make_date=make_date,
-            kaisai_kai=kai,
-            kaisai_nichi=nichi,
             race_no=race_no,
             jockey_code=jockey_code,
             trainer_code=trainer_code,
@@ -1548,17 +1557,30 @@ class CKRecord:
         dirt_heavy = _get_counts(397, 3)
         dirt_bad = _get_counts(415, 3)
 
-        # Distance (39-56) Start 506 (idx 505)
-        # 39 芝1200下 (505)
-        # 40 芝1400
-        # 41 芝1600 -> "16down" includes 1200, 1400, 1600 ??
-        # Mart definition: "~1600", "1601-2200", "2201~"
-        # CK has: 1200, 1201-1400, 1401-1600 -> These 3 form "~1600"
-        # 1601-1800, 1801-2000, 2001-2200 -> These 3 form "1601-2200"
-        # 2201-2400, 2401-2800, 2801+ -> "2201~"
+        # Distance (39-56)
+        # 仕様書(1-index): 芝 506/524/542/560/578/596/614/632/650
+        #                 ダ 668/686/704/722/740/758/776/794/812
+        # → 0-index:      芝 505/523/541/559/577/595/613/631/649
+        #                ダ 667/685/703/721/739/757/775/793/811
+        turf_1200_down = _get_counts(505, 3)
+        turf_1201_1400 = _get_counts(523, 3)
+        turf_1401_1600 = _get_counts(541, 3)
+        turf_1601_1800 = _get_counts(559, 3)
+        turf_1801_2000 = _get_counts(577, 3)
+        turf_2001_2200 = _get_counts(595, 3)
+        turf_2201_2400 = _get_counts(613, 3)
+        turf_2401_2800 = _get_counts(631, 3)
+        turf_2801_up = _get_counts(649, 3)
 
-        # We store raw arrays in Core, and aggregate in Mart (or Python)
-        # Here we extract blocks.
+        dirt_1200_down = _get_counts(667, 3)
+        dirt_1201_1400 = _get_counts(685, 3)
+        dirt_1401_1600 = _get_counts(703, 3)
+        dirt_1601_1800 = _get_counts(721, 3)
+        dirt_1801_2000 = _get_counts(739, 3)
+        dirt_2001_2200 = _get_counts(757, 3)
+        dirt_2201_2400 = _get_counts(775, 3)
+        dirt_2401_2800 = _get_counts(793, 3)
+        dirt_2801_up = _get_counts(811, 3)
 
         # Style (87) Start 1370 (idx 1369). 4 items * 3 bytes = 12 bytes.
         # Nige, Senko, Sashi, Oikomi
@@ -1646,8 +1668,24 @@ class CKRecord:
                 "dirt_right": dirt_right,
                 "dirt_left": dirt_left,
                 "dirt_str": dirt_str,
-                # Store distance raw arrays if needed?
-                # For mart we aggregate.
+                "turf_1200_down": turf_1200_down,
+                "turf_1201_1400": turf_1201_1400,
+                "turf_1401_1600": turf_1401_1600,
+                "turf_1601_1800": turf_1601_1800,
+                "turf_1801_2000": turf_1801_2000,
+                "turf_2001_2200": turf_2001_2200,
+                "turf_2201_2400": turf_2201_2400,
+                "turf_2401_2800": turf_2401_2800,
+                "turf_2801_up": turf_2801_up,
+                "dirt_1200_down": dirt_1200_down,
+                "dirt_1201_1400": dirt_1201_1400,
+                "dirt_1401_1600": dirt_1401_1600,
+                "dirt_1601_1800": dirt_1601_1800,
+                "dirt_1801_2000": dirt_1801_2000,
+                "dirt_2001_2200": dirt_2001_2200,
+                "dirt_2201_2400": dirt_2201_2400,
+                "dirt_2401_2800": dirt_2401_2800,
+                "dirt_2801_up": dirt_2801_up,
             },
             "style_counts": {
                 "nige": style_nige,
@@ -1668,15 +1706,29 @@ class CKRecord:
 # =============================================================================
 # DM: タイム型マイニング (MING)
 # =============================================================================
-DM_DATA_KBN_START = 2
+# 仕様: 28.タイム型データマイニング予想 レコード長303バイト
+# 位置は1-indexed → 0-indexed に変換して使用
+DM_DATA_KBN_START = 2  # 仕様:位置3, 1バイト
 DM_DATA_KBN_LEN = 1
-DM_RACE_KEY_START = 11
+DM_RACE_KEY_START = 11  # 仕様:位置12(開催年)〜位置27(レース番号末尾), 16バイト
 DM_RACE_KEY_LEN = 16
+DM_MINING_START = 31  # 仕様:位置32(1-indexed), 繰返18回, 各15バイト
+DM_MINING_REPEAT = 18
+DM_MINING_ITEM_LEN = 15
+# 繰返内の相対オフセット (0-indexed)
+DM_HORSE_NO_OFF = 0  # 馬番 2バイト
+DM_HORSE_NO_LEN = 2
+DM_TIME_OFF = 2  # 予想走破タイム 5バイト (9分99秒99)
+DM_TIME_LEN = 5
+DM_ERR_PLUS_OFF = 7  # 予想誤差+ 4バイト
+DM_ERR_PLUS_LEN = 4
+DM_ERR_MINUS_OFF = 11  # 予想誤差- 4バイト
+DM_ERR_MINUS_LEN = 4
 
 
 @dataclass
 class DMRecord:
-    """DMレコード: タイム型マイニング"""
+    """DMレコード: タイム型マイニング（馬ごと）"""
 
     race_id: int
     horse_no: int
@@ -1686,18 +1738,19 @@ class DMRecord:
     payload_raw: str
 
     @classmethod
-    def parse(cls, payload: str, race_id: int = 0) -> DMRecord:
-        """DMレコードをパース（簡易版）"""
+    def parse(cls, payload: str, race_id: int = 0) -> list[DMRecord]:
+        """DMレコードをパースし、馬ごとにリストで返す（最大18頭）"""
         try:
             b_payload = payload.encode("cp932")
         except UnicodeEncodeError:
             b_payload = payload.encode("cp932", errors="replace")
 
-        if len(b_payload) < 50:
-            b_payload = b_payload.ljust(50, b" ")
+        if len(b_payload) < 303:
+            b_payload = b_payload.ljust(303, b" ")
 
         data_kbn = _slice_byte_int(b_payload, DM_DATA_KBN_START, DM_DATA_KBN_LEN)
 
+        # race_id を構築
         if race_id == 0:
             race_key = _slice_byte_decode(b_payload, DM_RACE_KEY_START, DM_RACE_KEY_LEN)
             if len(race_key) >= 16:
@@ -1712,28 +1765,75 @@ class DMRecord:
                 except ValueError:
                     pass
 
-        return cls(
-            race_id=race_id,
-            horse_no=0,
-            data_kbn=data_kbn,
-            dm_time_x10=None,
-            dm_rank=None,
-            payload_raw=payload,
+        def _dm_time_to_x10(time_str: str) -> int | None:
+            s = time_str.strip()
+            if len(s) != 5 or not s.isdigit():
+                return None
+            # "9分99秒99" は欠損扱い
+            if s == "99999":
+                return None
+            minutes = int(s[0])
+            seconds = int(s[1:3])
+            centisec = int(s[3:5])
+            if minutes == 0 and seconds == 0 and centisec == 0:
+                return None
+            return minutes * 600 + seconds * 10 + (centisec // 10)
+
+        # 繰返し構造から馬ごとのレコードを抽出
+        results: list[DMRecord] = []
+        for i in range(DM_MINING_REPEAT):
+            base = DM_MINING_START + i * DM_MINING_ITEM_LEN
+            horse_no = _slice_byte_int(b_payload, base + DM_HORSE_NO_OFF, DM_HORSE_NO_LEN)
+            # 馬番が0またはNoneはスキップ（空エントリ）
+            if not horse_no:
+                continue
+
+            time_str = _slice_byte_decode(b_payload, base + DM_TIME_OFF, DM_TIME_LEN)
+            dm_time_x10 = _dm_time_to_x10(time_str)
+
+            results.append(
+                cls(
+                    race_id=race_id,
+                    horse_no=horse_no,
+                    data_kbn=data_kbn,
+                    dm_time_x10=dm_time_x10,
+                    dm_rank=None,
+                    payload_raw=payload,
+                )
+            )
+
+        # 同一レコード内の相対順位（小さいほど上位）
+        valid = sorted(
+            (r for r in results if r.dm_time_x10 is not None),
+            key=lambda r: (r.dm_time_x10, r.horse_no),
         )
+        for idx, r in enumerate(valid, start=1):
+            r.dm_rank = idx
+
+        return results
 
 
 # =============================================================================
 # TM: 対戦型マイニング (MING)
 # =============================================================================
-TM_DATA_KBN_START = 2
+# 仕様: 29.対戦型データマイニング予想 レコード長141バイト
+TM_DATA_KBN_START = 2  # 仕様:位置3, 1バイト
 TM_DATA_KBN_LEN = 1
-TM_RACE_KEY_START = 11
+TM_RACE_KEY_START = 11  # 仕様:位置12〜27, 16バイト
 TM_RACE_KEY_LEN = 16
+TM_MINING_START = 31  # 仕様:位置32(1-indexed), 繰返18回, 各6バイト
+TM_MINING_REPEAT = 18
+TM_MINING_ITEM_LEN = 6
+# 繰返内の相対オフセット (0-indexed)
+TM_HORSE_NO_OFF = 0  # 馬番 2バイト
+TM_HORSE_NO_LEN = 2
+TM_SCORE_OFF = 2  # 予測スコア 4バイト (000.0〜100.0)
+TM_SCORE_LEN = 4
 
 
 @dataclass
 class TMRecord:
-    """TMレコード: 対戦型マイニング"""
+    """TMレコード: 対戦型マイニング（馬ごと）"""
 
     race_id: int
     horse_no: int
@@ -1743,18 +1843,19 @@ class TMRecord:
     payload_raw: str
 
     @classmethod
-    def parse(cls, payload: str, race_id: int = 0) -> TMRecord:
-        """TMレコードをパース（簡易版）"""
+    def parse(cls, payload: str, race_id: int = 0) -> list[TMRecord]:
+        """TMレコードをパースし、馬ごとにリストで返す（最大18頭）"""
         try:
             b_payload = payload.encode("cp932")
         except UnicodeEncodeError:
             b_payload = payload.encode("cp932", errors="replace")
 
-        if len(b_payload) < 50:
-            b_payload = b_payload.ljust(50, b" ")
+        if len(b_payload) < 141:
+            b_payload = b_payload.ljust(141, b" ")
 
         data_kbn = _slice_byte_int(b_payload, TM_DATA_KBN_START, TM_DATA_KBN_LEN)
 
+        # race_id を構築
         if race_id == 0:
             race_key = _slice_byte_decode(b_payload, TM_RACE_KEY_START, TM_RACE_KEY_LEN)
             if len(race_key) >= 16:
@@ -1769,14 +1870,39 @@ class TMRecord:
                 except ValueError:
                     pass
 
-        return cls(
-            race_id=race_id,
-            horse_no=0,
-            data_kbn=data_kbn,
-            tm_score=None,
-            tm_rank=None,
-            payload_raw=payload,
+        # 繰返し構造から馬ごとのレコードを抽出
+        results: list[TMRecord] = []
+        for i in range(TM_MINING_REPEAT):
+            base = TM_MINING_START + i * TM_MINING_ITEM_LEN
+            horse_no = _slice_byte_int(b_payload, base + TM_HORSE_NO_OFF, TM_HORSE_NO_LEN)
+            # 馬番が0またはNoneはスキップ（空エントリ）
+            if not horse_no:
+                continue
+
+            # 予測スコア: 4桁 (例 "0853" → 85.3)
+            score_str = _slice_byte_decode(b_payload, base + TM_SCORE_OFF, TM_SCORE_LEN)
+            tm_score_x10 = int(score_str) if score_str.isdigit() else None
+
+            results.append(
+                cls(
+                    race_id=race_id,
+                    horse_no=horse_no,
+                    data_kbn=data_kbn,
+                    tm_score=tm_score_x10,
+                    tm_rank=None,
+                    payload_raw=payload,
+                )
+            )
+
+        # 同一レコード内の相対順位（大きいほど上位）
+        valid = sorted(
+            (r for r in results if r.tm_score is not None),
+            key=lambda r: (-r.tm_score, r.horse_no),
         )
+        for idx, r in enumerate(valid, start=1):
+            r.tm_rank = idx
+
+        return results
 
 
 # =============================================================================
@@ -1784,8 +1910,31 @@ class TMRecord:
 # =============================================================================
 EVENT_DATA_KBN_START = 2
 EVENT_DATA_KBN_LEN = 1
-EVENT_RACE_KEY_START = 11
-EVENT_RACE_KEY_LEN = 16
+EVENT_DATA_CREATE_YMD_START = 3  # pos4, len8
+EVENT_DATA_CREATE_YMD_LEN = 8
+
+# Common key starts at pos12 (0-index 11)
+EVENT_KEY_START = 11
+EVENT_KEY_LEN = 16
+
+# WE does not include race_no. Layout differs from others.
+WE_KAISAI_YEAR_START = 11  # pos12, len4
+WE_KAISAI_MD_START = 15  # pos16, len4
+WE_TRACK_CD_START = 19  # pos20, len2
+WE_KAISAI_KAI_START = 21  # pos22, len2
+WE_KAISAI_NICHI_START = 23  # pos24, len2
+WE_ANNOUNCE_START = 25  # pos26, len8
+WE_CHANGE_ID_START = 33  # pos34, len1
+WE_WEATHER_NOW_START = 34  # pos35, len1
+WE_GOING_TURF_NOW_START = 35  # pos36, len1
+WE_GOING_DIRT_NOW_START = 36  # pos37, len1
+WE_WEATHER_PREV_START = 37  # pos38, len1
+WE_GOING_TURF_PREV_START = 38  # pos39, len1
+WE_GOING_DIRT_PREV_START = 39  # pos40, len1
+
+# Other events include race_no.
+EVENT_ANNOUNCE_START = 27  # pos28, len8
+EVENT_ANNOUNCE_LEN = 8
 
 
 @dataclass
@@ -1795,11 +1944,14 @@ class EventChangeRecord:
     record_type: str  # 'WE', 'AV', 'JC', 'TC', 'CC'
     race_id: int
     data_kbn: int
+    data_create_ymd: str
+    announce_mmddhhmi: str
+    payload_parsed: dict
     payload_raw: str
 
     @classmethod
     def parse(cls, payload: str, race_id: int = 0) -> EventChangeRecord:
-        """イベント変更レコードをパース（簡易版）"""
+        """イベント変更レコードをパース（監査キー+最低限構造化）"""
         rec_type = payload[:2] if len(payload) >= 2 else ""
 
         try:
@@ -1807,13 +1959,66 @@ class EventChangeRecord:
         except UnicodeEncodeError:
             b_payload = payload.encode("cp932", errors="replace")
 
-        if len(b_payload) < 50:
-            b_payload = b_payload.ljust(50, b" ")
+        expected_len = {"WE": 42, "AV": 78, "JC": 161, "TC": 45, "CC": 50}.get(rec_type, 50)
+        if len(b_payload) < expected_len:
+            b_payload = b_payload.ljust(expected_len, b" ")
 
         data_kbn = _slice_byte_int(b_payload, EVENT_DATA_KBN_START, EVENT_DATA_KBN_LEN)
+        data_create_ymd = _slice_byte_decode(
+            b_payload, EVENT_DATA_CREATE_YMD_START, EVENT_DATA_CREATE_YMD_LEN
+        )
+        if not data_create_ymd:
+            data_create_ymd = "00000000"
+
+        payload_parsed: dict = {"record_type": rec_type}
+
+        # WE has a different key layout (no race_no)
+        if rec_type == "WE":
+            kaisai_year = _slice_byte_int(b_payload, WE_KAISAI_YEAR_START, 4)
+            kaisai_md = _slice_byte_decode(b_payload, WE_KAISAI_MD_START, 4)
+            track_cd_str = _slice_byte_decode(b_payload, WE_TRACK_CD_START, 2)
+
+            try:
+                date_int = int(f"{kaisai_year:04d}{kaisai_md}")
+                track_int = int(track_cd_str) if track_cd_str.isdigit() else 0
+                if race_id == 0:
+                    race_id = date_int * 10000 + track_int * 100 + 0  # pseudo race_no=00
+            except Exception:
+                if race_id == 0:
+                    race_id = 0
+
+            announce_mmddhhmi = _slice_byte_decode(b_payload, WE_ANNOUNCE_START, 8) or "00000000"
+
+            payload_parsed.update(
+                {
+                    "kaisai_year": kaisai_year,
+                    "kaisai_md": kaisai_md,
+                    "track_cd": track_cd_str,
+                    "kaisai_kai": _slice_byte_int(b_payload, WE_KAISAI_KAI_START, 2),
+                    "kaisai_nichi": _slice_byte_int(b_payload, WE_KAISAI_NICHI_START, 2),
+                    "announce_mmddhhmi": announce_mmddhhmi,
+                    "change_id": _slice_byte_int(b_payload, WE_CHANGE_ID_START, 1),
+                    "weather_now": _slice_byte_int(b_payload, WE_WEATHER_NOW_START, 1),
+                    "going_turf_now": _slice_byte_int(b_payload, WE_GOING_TURF_NOW_START, 1),
+                    "going_dirt_now": _slice_byte_int(b_payload, WE_GOING_DIRT_NOW_START, 1),
+                    "weather_prev": _slice_byte_int(b_payload, WE_WEATHER_PREV_START, 1),
+                    "going_turf_prev": _slice_byte_int(b_payload, WE_GOING_TURF_PREV_START, 1),
+                    "going_dirt_prev": _slice_byte_int(b_payload, WE_GOING_DIRT_PREV_START, 1),
+                }
+            )
+
+            return cls(
+                record_type=rec_type,
+                race_id=race_id,
+                data_kbn=data_kbn,
+                data_create_ymd=data_create_ymd,
+                announce_mmddhhmi=announce_mmddhhmi,
+                payload_parsed=payload_parsed,
+                payload_raw=payload,
+            )
 
         if race_id == 0:
-            race_key = _slice_byte_decode(b_payload, EVENT_RACE_KEY_START, EVENT_RACE_KEY_LEN)
+            race_key = _slice_byte_decode(b_payload, EVENT_KEY_START, EVENT_KEY_LEN)
             if len(race_key) >= 16:
                 try:
                     year = int(race_key[0:4])
@@ -1826,10 +2031,56 @@ class EventChangeRecord:
                 except ValueError:
                     pass
 
+        announce_mmddhhmi = (
+            _slice_byte_decode(b_payload, EVENT_ANNOUNCE_START, EVENT_ANNOUNCE_LEN) or "00000000"
+        )
+
+        if rec_type == "AV":
+            payload_parsed.update(
+                {
+                    "announce_mmddhhmi": announce_mmddhhmi,
+                    "horse_no": _slice_byte_int(b_payload, 35, 2),  # pos36
+                    "reason_kbn": _slice_byte_decode(b_payload, 73, 3),  # pos74
+                }
+            )
+        elif rec_type == "JC":
+            payload_parsed.update(
+                {
+                    "announce_mmddhhmi": announce_mmddhhmi,
+                    "horse_no": _slice_byte_int(b_payload, 35, 2),  # pos36
+                    "carried_weight_x10_after": _slice_byte_int(b_payload, 73, 3),  # pos74
+                    "jockey_code_after": _slice_byte_decode(b_payload, 76, 5),  # pos77
+                    "carried_weight_x10_before": _slice_byte_int(b_payload, 116, 3),  # pos117
+                    "jockey_code_before": _slice_byte_decode(b_payload, 119, 5),  # pos120
+                }
+            )
+        elif rec_type == "TC":
+            payload_parsed.update(
+                {
+                    "announce_mmddhhmi": announce_mmddhhmi,
+                    "post_time_after": _slice_byte_decode(b_payload, 35, 4),  # pos36
+                    "post_time_before": _slice_byte_decode(b_payload, 39, 4),  # pos40
+                }
+            )
+        elif rec_type == "CC":
+            payload_parsed.update(
+                {
+                    "announce_mmddhhmi": announce_mmddhhmi,
+                    "distance_m_after": _slice_byte_int(b_payload, 35, 4),  # pos36
+                    "track_type_after": _slice_byte_int(b_payload, 39, 2),  # pos40
+                    "distance_m_before": _slice_byte_int(b_payload, 41, 4),  # pos42
+                    "track_type_before": _slice_byte_int(b_payload, 45, 2),  # pos46
+                    "reason_kbn": _slice_byte_int(b_payload, 47, 1),  # pos48
+                }
+            )
+
         return cls(
             record_type=rec_type,
             race_id=race_id,
             data_kbn=data_kbn,
+            data_create_ymd=data_create_ymd,
+            announce_mmddhhmi=announce_mmddhhmi,
+            payload_parsed=payload_parsed,
             payload_raw=payload,
         )
 

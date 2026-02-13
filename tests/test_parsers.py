@@ -3,11 +3,15 @@
 """
 
 from app.infrastructure.parsers import (
+    CKRecord,
+    DMRecord,
+    EventChangeRecord,
     HorseExclusionRecord,
     OddsRecord,
     PayoutRecord,
     RaceRecord,
     RunnerRecord,
+    TMRecord,
     _slice_date,
     _slice_decode,
     _slice_int,
@@ -377,3 +381,256 @@ class TestHorseExclusionRecordParser:
         assert record.horse_id == "2023100239"
         assert record.horse_name.strip() == "ファストワーカー"
         assert record.flags == "00110"
+
+
+class TestMiningParsers:
+    """MING (DM/TM) パーサーのテスト"""
+
+    def test_dm_parse_two_horses_and_rank(self):
+        b_payload = bytearray(b" " * 303)
+
+        def put(offset: int, s: str):
+            b = s.encode("cp932")
+            b_payload[offset : offset + len(b)] = b
+
+        # Header: "DM" + data_kbn + date(8)
+        put(0, "DM120260203")
+        # Race key (pos12-27, 16 bytes)
+        put(11, "2026020305010101")
+
+        # Horse1 at pos32
+        put(31, "01")  # horse_no
+        put(33, "13000")  # 1:30.00 -> 90.0s -> x10=900
+
+        # Horse2 next item (15 bytes each)
+        put(31 + 15, "02")
+        put(33 + 15, "13100")  # 1:31.00 -> x10=910
+
+        payload = b_payload.decode("cp932", errors="replace")
+        rows = DMRecord.parse(payload)
+
+        assert len(rows) == 2
+        assert rows[0].race_id == 202602030501
+        assert rows[0].horse_no == 1
+        assert rows[0].dm_time_x10 == 900
+
+        assert rows[1].horse_no == 2
+        assert rows[1].dm_time_x10 == 910
+
+        by_horse = {r.horse_no: r for r in rows}
+        assert by_horse[1].dm_rank == 1
+        assert by_horse[2].dm_rank == 2
+
+    def test_tm_parse_two_horses_and_rank(self):
+        b_payload = bytearray(b" " * 141)
+
+        def put(offset: int, s: str):
+            b = s.encode("cp932")
+            b_payload[offset : offset + len(b)] = b
+
+        # Header: "TM" + data_kbn + date(8)
+        put(0, "TM120260203")
+        # Race key (pos12-27, 16 bytes)
+        put(11, "2026020305010101")
+
+        # Horse1 at pos32
+        put(31, "01")  # horse_no
+        put(33, "0853")  # 85.3 -> x10=853
+
+        # Horse2 next item
+        put(31 + 6, "02")
+        put(33 + 6, "0900")  # 90.0 -> x10=900
+
+        payload = b_payload.decode("cp932", errors="replace")
+        rows = TMRecord.parse(payload)
+
+        assert len(rows) == 2
+        assert rows[0].race_id == 202602030501
+        assert rows[0].horse_no == 1
+        assert rows[0].tm_score == 853
+
+        assert rows[1].horse_no == 2
+        assert rows[1].tm_score == 900
+
+        by_horse = {r.horse_no: r for r in rows}
+        assert by_horse[2].tm_rank == 1
+        assert by_horse[1].tm_rank == 2
+
+
+class TestCKRecordParser:
+    """CK (SNPN) パーサーのテスト"""
+
+    def test_ck_parse_minimal_and_stats_keys(self):
+        b_payload = bytearray(b" " * 6870)
+
+        def put(offset: int, s: str):
+            b = s.encode("cp932")
+            b_payload[offset : offset + len(b)] = b
+
+        # Header: "CK" + data_kbn + make_date(8)
+        put(0, "CK1")
+        put(3, "20260203")
+
+        # Key
+        put(11, "2026")  # kaisai_year
+        put(15, "0203")  # kaisai_md
+        put(19, "05")  # track_cd
+        put(21, "01")  # kaisai_kai
+        put(23, "01")  # kaisai_nichi
+        put(25, "12")  # race_no
+        put(27, "2021101234")  # horse_id
+        put(37, "TESTHORSE")  # horse_name
+
+        # Counts (overall/central) - 6 buckets * 3 bytes
+        put(127, "001002003004005006")  # total
+        put(145, "000001000000000000")  # central
+
+        payload = b_payload.decode("cp932", errors="replace")
+        record = CKRecord.parse(payload)
+
+        assert record.data_kbn == 1
+        assert record.make_date is not None
+        assert record.kaisai_year == 2026
+        assert record.kaisai_md == "0203"
+        assert record.track_cd == "05"
+        assert record.race_no == 12
+        assert record.horse_id == "2021101234"
+        assert record.horse_name == "TESTHORSE"
+        assert record.counts_total == [1, 2, 3, 4, 5, 6]
+        assert record.counts_central == [0, 1, 0, 0, 0, 0]
+
+        stats = record.get_full_stats()
+        assert "finish_counts" in stats
+        assert "turf_1200_down" in stats["finish_counts"]
+        assert "dirt_2801_up" in stats["finish_counts"]
+
+
+class TestEventChangeRecordParser:
+    """当日変更 (WE/AV/JC/TC/CC) パーサーのテスト"""
+
+    def test_we_has_pseudo_race_id_and_audit_keys(self):
+        b_payload = bytearray(b" " * 42)
+
+        def put(offset: int, s: str):
+            b = s.encode("cp932")
+            b_payload[offset : offset + len(b)] = b
+
+        put(0, "WE120260203")  # rec + data_kbn + data_create_ymd
+        put(11, "2026")  # kaisai_year
+        put(15, "0203")  # kaisai_md
+        put(19, "05")  # track_cd
+        put(21, "01")  # kaisai_kai
+        put(23, "01")  # kaisai_nichi
+        put(25, "02031234")  # announce_mmddhhmi
+
+        payload = b_payload.decode("cp932", errors="replace")
+        rec = EventChangeRecord.parse(payload)
+
+        assert rec.record_type == "WE"
+        assert rec.data_create_ymd == "20260203"
+        assert rec.announce_mmddhhmi == "02031234"
+        assert rec.race_id == 202602030500  # YYYYMMDDTT00 (pseudo race_no=00)
+
+    def test_av_has_audit_keys(self):
+        b_payload = bytearray(b" " * 78)
+
+        def put(offset: int, s: str):
+            b = s.encode("cp932")
+            b_payload[offset : offset + len(b)] = b
+
+        put(0, "AV120260203")
+        put(11, "2026020305010101")  # race_key
+        put(27, "02031234")  # announce
+        put(35, "08")  # horse_no
+        put(73, "123")  # reason_kbn
+
+        payload = b_payload.decode("cp932", errors="replace")
+        rec = EventChangeRecord.parse(payload)
+
+        assert rec.record_type == "AV"
+        assert rec.data_create_ymd == "20260203"
+        assert rec.announce_mmddhhmi == "02031234"
+        assert rec.race_id == 202602030501
+        assert rec.payload_parsed["horse_no"] == 8
+        assert rec.payload_parsed["reason_kbn"] == "123"
+
+    def test_jc_has_audit_keys(self):
+        b_payload = bytearray(b" " * 161)
+
+        def put(offset: int, s: str):
+            b = s.encode("cp932")
+            b_payload[offset : offset + len(b)] = b
+
+        put(0, "JC120260203")
+        put(11, "2026020305010101")  # race_key
+        put(27, "02031234")  # announce
+        put(35, "08")  # horse_no
+        put(73, "500")  # carried_weight_x10_after
+        put(76, "12345")  # jockey_code_after
+        put(116, "490")  # carried_weight_x10_before
+        put(119, "54321")  # jockey_code_before
+
+        payload = b_payload.decode("cp932", errors="replace")
+        rec = EventChangeRecord.parse(payload)
+
+        assert rec.record_type == "JC"
+        assert rec.data_create_ymd == "20260203"
+        assert rec.announce_mmddhhmi == "02031234"
+        assert rec.race_id == 202602030501
+        assert rec.payload_parsed["horse_no"] == 8
+        assert rec.payload_parsed["carried_weight_x10_after"] == 500
+        assert rec.payload_parsed["jockey_code_after"] == "12345"
+        assert rec.payload_parsed["carried_weight_x10_before"] == 490
+        assert rec.payload_parsed["jockey_code_before"] == "54321"
+
+    def test_tc_has_audit_keys(self):
+        b_payload = bytearray(b" " * 45)
+
+        def put(offset: int, s: str):
+            b = s.encode("cp932")
+            b_payload[offset : offset + len(b)] = b
+
+        put(0, "TC120260203")
+        put(11, "2026020305010101")  # race_key
+        put(27, "02031234")  # announce
+        put(35, "1230")  # post_time_after
+        put(39, "1225")  # post_time_before
+
+        payload = b_payload.decode("cp932", errors="replace")
+        rec = EventChangeRecord.parse(payload)
+
+        assert rec.record_type == "TC"
+        assert rec.data_create_ymd == "20260203"
+        assert rec.announce_mmddhhmi == "02031234"
+        assert rec.race_id == 202602030501
+        assert rec.payload_parsed["post_time_after"] == "1230"
+        assert rec.payload_parsed["post_time_before"] == "1225"
+
+    def test_cc_has_audit_keys(self):
+        b_payload = bytearray(b" " * 50)
+
+        def put(offset: int, s: str):
+            b = s.encode("cp932")
+            b_payload[offset : offset + len(b)] = b
+
+        put(0, "CC120260203")
+        put(11, "2026020305010101")  # race_key
+        put(27, "02031234")  # announce
+        put(35, "1600")  # distance_m_after
+        put(39, "10")  # track_type_after
+        put(41, "1400")  # distance_m_before
+        put(45, "20")  # track_type_before
+        put(47, "1")  # reason_kbn
+
+        payload = b_payload.decode("cp932", errors="replace")
+        rec = EventChangeRecord.parse(payload)
+
+        assert rec.record_type == "CC"
+        assert rec.data_create_ymd == "20260203"
+        assert rec.announce_mmddhhmi == "02031234"
+        assert rec.race_id == 202602030501
+        assert rec.payload_parsed["distance_m_after"] == 1600
+        assert rec.payload_parsed["track_type_after"] == 10
+        assert rec.payload_parsed["distance_m_before"] == 1400
+        assert rec.payload_parsed["track_type_before"] == 20
+        assert rec.payload_parsed["reason_kbn"] == 1

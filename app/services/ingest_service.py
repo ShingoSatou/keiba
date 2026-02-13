@@ -6,6 +6,7 @@ JV-Linkからデータを取得し、PostgreSQLに保存するサービス。
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import TYPE_CHECKING
 
@@ -48,14 +49,16 @@ class IngestService:
         count = 0
 
         insert_sql = """
-            INSERT INTO raw.jv_raw (dataspec, rec_id, filename, payload)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO raw.jv_raw (dataspec, rec_id, filename, payload, payload_hash)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (dataspec, rec_id, payload_hash) DO NOTHING
         """
 
         for record in self.jv.read_all():
+            payload_hash = hashlib.sha256(record.payload.encode("utf-8", errors="replace")).digest()
             self.db.execute(
                 insert_sql,
-                (dataspec, record.rec_id, record.filename, record.payload),
+                (dataspec, record.rec_id, record.filename, record.payload, payload_hash),
             )
             count += 1
 
