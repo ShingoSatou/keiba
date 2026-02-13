@@ -119,13 +119,29 @@ def verify_ming():
     for r in records:
         try:
             if r["rec_id"] == "DM":
-                parsed = DMRecord.parse(r["payload"])
-                print(f"  ✅ DM: race_id={parsed.race_id}, data_kbn={parsed.data_kbn}")
-                dm_count += 1
+                parsed_list = DMRecord.parse(r["payload"])
+                if parsed_list:
+                    first = parsed_list[0]
+                    print(
+                        f"  ✅ DM: race_id={first.race_id}, "
+                        f"data_kbn={first.data_kbn}, "
+                        f"horses={len(parsed_list)}"
+                    )
+                else:
+                    print("  ⚠️  DM: パース結果が空")
+                dm_count += len(parsed_list)
             elif r["rec_id"] == "TM":
-                parsed = TMRecord.parse(r["payload"])
-                print(f"  ✅ TM: race_id={parsed.race_id}, data_kbn={parsed.data_kbn}")
-                tm_count += 1
+                parsed_list = TMRecord.parse(r["payload"])
+                if parsed_list:
+                    first = parsed_list[0]
+                    print(
+                        f"  ✅ TM: race_id={first.race_id}, "
+                        f"data_kbn={first.data_kbn}, "
+                        f"horses={len(parsed_list)}"
+                    )
+                else:
+                    print("  ⚠️  TM: パース結果が空")
+                tm_count += len(parsed_list)
         except Exception as e:
             print(f"  ❌ MING parse error ({r['rec_id']}): {e}")
 
@@ -188,8 +204,14 @@ def verify_snpn():
             continue
         try:
             parsed = CKRecord.parse(r["payload"])
+            try:
+                track_int = int(parsed.track_cd) if parsed.track_cd.isdigit() else 0
+                date_int = int(f"{parsed.kaisai_year:04d}{parsed.kaisai_md}")
+                race_id = date_int * 10000 + track_int * 100 + parsed.race_no
+            except Exception:
+                race_id = 0
             print(
-                f"  ✅ CK: race_id={parsed.race_id}, "
+                f"  ✅ CK: race_id={race_id}, "
                 f"make={parsed.make_date}, "
                 f"horse={parsed.horse_name.strip()} ({parsed.horse_id}), "
                 f"h_total={parsed.counts_total}, "  # Horse Total Stats

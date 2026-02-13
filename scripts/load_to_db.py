@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import sys
+from datetime import date
 from pathlib import Path
 
 # プロジェクトルート設定
@@ -49,6 +50,56 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 
+def calc_payload_hash(payload: str) -> bytes:
+    """payload(TEXT) のSHA256ハッシュを計算（raw.jv_raw の重複排除用）"""
+    return hashlib.sha256(payload.encode("utf-8", errors="replace")).digest()
+
+
+def ensure_race_stub(db: Database, race_id: int) -> None:
+    """core.race に race_id のstub行がなければ作成する（FK違反回避）"""
+    if not race_id:
+        return
+
+    try:
+        r_id = int(race_id)
+    except (TypeError, ValueError):
+        return
+
+    if r_id <= 0:
+        return
+
+    race_no = r_id % 100
+    track_code = (r_id // 100) % 100
+    date_int = int(r_id // 10000)
+    y = date_int // 10000
+    m = (date_int // 100) % 100
+    d = date_int % 100
+    try:
+        race_date = date(y, m, d).isoformat()
+    except ValueError:
+        race_date = "2000-01-01"
+
+    sql = """
+        INSERT INTO core.race (
+            race_id, race_date, track_code, race_no,
+            surface, distance_m
+        ) VALUES (
+            %(race_id)s, %(race_date)s, %(track_code)s, %(race_no)s,
+            0, 0
+        )
+        ON CONFLICT (race_id) DO NOTHING
+    """
+    db.execute(
+        sql,
+        {
+            "race_id": r_id,
+            "race_date": race_date,
+            "track_code": track_code,
+            "race_no": race_no,
+        },
+    )
+
+
 def load_jsonl(file_path: Path):
     """JSONLファイルを読み込み"""
     with file_path.open("r", encoding="utf-8") as f:
@@ -59,12 +110,22 @@ def load_jsonl(file_path: Path):
 
 def insert_raw_record(db: Database, dataspec: str, record: dict) -> None:
     """raw.jv_rawにレコードを挿入（単一レコード版）"""
+    payload_hash = calc_payload_hash(record["payload"])
     sql = """
-        INSERT INTO raw.jv_raw (dataspec, rec_id, filename, payload)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT DO NOTHING
+        INSERT INTO raw.jv_raw (dataspec, rec_id, filename, payload, payload_hash)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (dataspec, rec_id, payload_hash) DO NOTHING
     """
-    db.execute(sql, (dataspec, record["rec_id"], record["filename"], record["payload"]))
+    db.execute(
+        sql,
+        (
+            dataspec,
+            record["rec_id"],
+            record["filename"],
+            record["payload"],
+            payload_hash,
+        ),
+    )
 
 
 def insert_raw_records_batch(db: Database, dataspec: str, records: list[dict]) -> int:
@@ -72,11 +133,14 @@ def insert_raw_records_batch(db: Database, dataspec: str, records: list[dict]) -
     if not records:
         return 0
     sql = """
-        INSERT INTO raw.jv_raw (dataspec, rec_id, filename, payload)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT DO NOTHING
+        INSERT INTO raw.jv_raw (dataspec, rec_id, filename, payload, payload_hash)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (dataspec, rec_id, payload_hash) DO NOTHING
     """
-    values = [(dataspec, r["rec_id"], r["filename"], r["payload"]) for r in records]
+    values = [
+        (dataspec, r["rec_id"], r["filename"], r["payload"], calc_payload_hash(r["payload"]))
+        for r in records
+    ]
     cursor = db.connect().cursor()
     cursor.executemany(sql, values)
     return len(records)
@@ -171,60 +235,17 @@ def upsert_runner(
     """
     db.execute(horse_sql, {"horse_id": runner.horse_id, "horse_name": runner.horse_name})
 
-    # race_idから最低限の情報を復元して入れたいところだが、とりあえずrace_idのみ試みる。
-    # スキーマのNOT NULL制約に引っかかる場合はデフォルト値を入れる必要がある。
-    # ここでは一般的な必須項目（日付、場、回、R）をrace_idから分解して入れたほうが安全。
-    # parsers.pyのロジック: race_id = date_int * 10000 + track * 100 + race_no
-    # つまり YYYYMMDD + TT + RR = YYYYMMDDTTRR
-
-    try:
-        r_id = runner.race_id
-        race_no = r_id % 100
-        track_code = (r_id // 100) % 100
-        date_int = int(r_id // 10000)
-        y = date_int // 10000
-        m = (date_int // 100) % 100
-        d = date_int % 100
-        race_date = f"{y:04d}-{m:02d}-{d:02d}"
-    except Exception:
-        race_no = 0
-        track_code = 0
-        race_date = "2000-01-01"
-
-    # 簡易的に race_id のみでInsertしようとするとNOT NULL制約等で失敗し、
-    # その際のRollbackで直前のHorse登録まで消えてしまうリスクがあるため、
-    # 最初からデフォルト値付きの完全なSQLで実行する。
-    race_sql = """
-        INSERT INTO core.race (
-            race_id, race_date, track_code, race_no, surface, distance_m, 
-            going, weather, class_code, field_size
-        ) VALUES (
-            %(race_id)s, %(race_date)s, %(track_code)s, %(race_no)s, 0, 0, 0, 0, 0, 0
-        ) 
-        ON CONFLICT (race_id) DO NOTHING
-    """
-    db.execute(
-        race_sql,
-        {
-            "race_id": runner.race_id,
-            "race_date": race_date,
-            "track_code": track_code,
-            "race_no": race_no,
-        },
-    )
+    # FK違反回避のため、core.race のstubを先に用意する
+    ensure_race_stub(db, runner.race_id)
 
     # runner (出走表)
     runner_sql = """
         INSERT INTO core.runner (
             race_id, horse_id, horse_no, gate, jockey_id,
-            trainer_id, carried_weight, body_weight, body_weight_diff,
-            data_kubun, trainer_code_raw, trainer_name_abbr,
-            jockey_code_raw, jockey_name_abbr
+            trainer_id, carried_weight, body_weight, body_weight_diff
         ) VALUES (
             %(race_id)s, %(horse_id)s, %(horse_no)s, %(gate)s, %(jockey_id)s,
-            %(trainer_id)s, %(carried_weight)s, %(body_weight)s, %(body_weight_diff)s,
-            %(data_kubun)s, %(trainer_code_raw)s, %(trainer_name_abbr)s,
-            %(jockey_code_raw)s, %(jockey_name_abbr)s
+            %(trainer_id)s, %(carried_weight)s, %(body_weight)s, %(body_weight_diff)s
         )
         ON CONFLICT (race_id, horse_id) DO UPDATE SET
             horse_no = EXCLUDED.horse_no,
@@ -234,11 +255,6 @@ def upsert_runner(
             carried_weight = EXCLUDED.carried_weight,
             body_weight = EXCLUDED.body_weight,
             body_weight_diff = EXCLUDED.body_weight_diff,
-            data_kubun = EXCLUDED.data_kubun,
-            trainer_code_raw = EXCLUDED.trainer_code_raw,
-            trainer_name_abbr = EXCLUDED.trainer_name_abbr,
-            jockey_code_raw = EXCLUDED.jockey_code_raw,
-            jockey_name_abbr = EXCLUDED.jockey_name_abbr,
             updated_at = now()
     """
     db.execute(
@@ -253,11 +269,6 @@ def upsert_runner(
             "carried_weight": runner.carried_weight,
             "body_weight": runner.body_weight,
             "body_weight_diff": runner.body_weight_diff,
-            "data_kubun": runner.data_kubun,
-            "trainer_code_raw": runner.trainer_code_raw,
-            "trainer_name_abbr": runner.trainer_name_abbr,
-            "jockey_code_raw": runner.jockey_code_raw,
-            "jockey_name_abbr": runner.jockey_name_abbr,
         },
     )
 
@@ -459,6 +470,8 @@ def upsert_o1_timeseries(db: Database, records: list[OddsTimeSeriesRecord]) -> i
 
     # ヘッダー情報は最初のレコードから取得
     first = records[0]
+    # FK (core.o1_header -> core.race) 回避のため、stub race を用意
+    ensure_race_stub(db, first.race_id)
     header_sql = """
         INSERT INTO core.o1_header (race_id, data_kbn, announce_mmddhhmi, win_pool_total_100yen)
         VALUES (%(race_id)s, %(data_kbn)s, %(announce_mmddhhmi)s, %(win_pool_total_100yen)s)
@@ -683,18 +696,38 @@ def insert_mining_record(db: Database, rec_id: str, record) -> None:
     """core.mining_dm / core.mining_tm にマイニングデータを挿入"""
     if rec_id == "DM":
         sql = """
-            INSERT INTO core.mining_dm (race_id, horse_no, data_kbn, payload_raw)
-            VALUES (%(race_id)s, %(horse_no)s, %(data_kbn)s, %(payload_raw)s)
+            INSERT INTO core.mining_dm (
+                race_id, horse_no, data_kbn,
+                dm_time_x10, dm_rank,
+                payload_raw
+            )
+            VALUES (
+                %(race_id)s, %(horse_no)s, %(data_kbn)s,
+                %(dm_time_x10)s, %(dm_rank)s,
+                %(payload_raw)s
+            )
             ON CONFLICT (race_id, horse_no) DO UPDATE SET
                 data_kbn = EXCLUDED.data_kbn,
+                dm_time_x10 = EXCLUDED.dm_time_x10,
+                dm_rank = EXCLUDED.dm_rank,
                 payload_raw = EXCLUDED.payload_raw
         """
     else:  # TM
         sql = """
-            INSERT INTO core.mining_tm (race_id, horse_no, data_kbn, payload_raw)
-            VALUES (%(race_id)s, %(horse_no)s, %(data_kbn)s, %(payload_raw)s)
+            INSERT INTO core.mining_tm (
+                race_id, horse_no, data_kbn,
+                tm_score, tm_rank,
+                payload_raw
+            )
+            VALUES (
+                %(race_id)s, %(horse_no)s, %(data_kbn)s,
+                %(tm_score)s, %(tm_rank)s,
+                %(payload_raw)s
+            )
             ON CONFLICT (race_id, horse_no) DO UPDATE SET
                 data_kbn = EXCLUDED.data_kbn,
+                tm_score = EXCLUDED.tm_score,
+                tm_rank = EXCLUDED.tm_rank,
                 payload_raw = EXCLUDED.payload_raw
         """
     db.execute(
@@ -703,6 +736,10 @@ def insert_mining_record(db: Database, rec_id: str, record) -> None:
             "race_id": record.race_id,
             "horse_no": record.horse_no,
             "data_kbn": record.data_kbn,
+            "dm_time_x10": getattr(record, "dm_time_x10", None),
+            "dm_rank": getattr(record, "dm_rank", None),
+            "tm_score": getattr(record, "tm_score", None),
+            "tm_rank": getattr(record, "tm_rank", None),
             "payload_raw": record.payload_raw,
         },
     )
@@ -710,18 +747,29 @@ def insert_mining_record(db: Database, rec_id: str, record) -> None:
 
 def insert_event_change(db: Database, record: EventChangeRecord) -> None:
     """core.event_change に当日変更を挿入"""
+    # FK (core.event_change -> core.race) 回避のため stub race を用意
+    ensure_race_stub(db, record.race_id)
     sql = """
-        INSERT INTO core.event_change (race_id, record_type, data_create_ymd, payload_parsed)
-        VALUES (%(race_id)s, %(record_type)s, NULL, %(payload)s)
+        INSERT INTO core.event_change (
+            race_id, record_type, data_create_ymd, announce_mmddhhmi, payload_parsed
+        )
+        VALUES (
+            %(race_id)s, %(record_type)s, %(data_create_ymd)s, %(announce_mmddhhmi)s, %(payload)s
+        )
     """
     import json as _json
+
+    payload = dict(record.payload_parsed or {})
+    payload.setdefault("raw", record.payload_raw)
 
     db.execute(
         sql,
         {
             "race_id": record.race_id,
             "record_type": record.record_type,
-            "payload": _json.dumps({"raw": record.payload_raw}, ensure_ascii=False),
+            "data_create_ymd": record.data_create_ymd,
+            "announce_mmddhhmi": record.announce_mmddhhmi,
+            "payload": _json.dumps(payload, ensure_ascii=False),
         },
     )
 
@@ -729,6 +777,10 @@ def insert_event_change(db: Database, record: EventChangeRecord) -> None:
 def insert_ck_record(db: Database, dataspec: str, record: CKRecord, filename: str) -> None:
     """raw.jv_ck_event / core.ck_runner_event にCKデータを挿入"""
     import json as _json
+
+    # data_create_ymd が取れない場合は投入しない（キー/監査に必要）
+    if record.make_date is None:
+        return
 
     # SHA256 calc
     payload_bytes = record.payload_raw.encode("cp932", errors="replace")
@@ -741,8 +793,8 @@ def insert_ck_record(db: Database, dataspec: str, record: CKRecord, filename: st
             kaisai_year, kaisai_md, track_cd, kaisai_kai, kaisai_nichi,
             race_no, horse_id, horse_name, payload, payload_sha256
         ) VALUES (
-            %(dataspec)s, 'CK', 0, %(data_create_ymd)s,
-            %(year)s, %(md)s, %(track)s, %(kai)s, %(nichi)s,
+            %(dataspec)s, 'CK', %(data_kbn)s, %(data_create_ymd)s,
+            %(kaisai_year)s, %(kaisai_md)s, %(track_cd)s, %(kaisai_kai)s, %(kaisai_nichi)s,
             %(race_no)s, %(horse_id)s, %(horse_name)s, %(payload)s, %(sha256)s
         )
         ON CONFLICT (
@@ -753,67 +805,18 @@ def insert_ck_record(db: Database, dataspec: str, record: CKRecord, filename: st
         DO NOTHING
     """
 
-    # We need to extract parts from RaceID or Record fields?
-    # CKRecord stores explicit fields now.
-    # make_date is CK_MAKE_DATE (Data Create Date? or Race Date?)
-    # Spec: "3 〇 データ作成年月日 4 8" -> CK_MAKE_DATE.
-    # So record.make_date IS data_create_ymd.
-
-    # Casting to int for DB
-    try:
-        # year = int(record.race_id[0:4])  # record.race_id is simplified YYYYMMDD...
-        # Wait, CKRecord.race_id construction: `f"{year}{md}{course}{race_no}"`
-        # But we have `record.kaisai_kai` etc.
-        # Let's use `record.make_date` for data_create_ymd.
-        # And parse int from the other fields.
-
-        # We need raw string values for year/md/track/kai/nichi/raceno
-        # CKRecord now has them!
-        # But race_id is constructed.
-        # Let's re-parse from raw if needed or use what we stored.
-        # CKRecord has `kaisai_kai`, `kaisai_nichi`, `race_no`, `jockey_code` etc.
-        # But `year`, `md`, `course` were local vars in `parse`.
-        # I didn't store `year` in CKRecord! I stored `race_id`.
-        # I NEED `year`, `md`, `course` (track) in CKRecord or parse them again.
-
-        # I'll rely on `record.race_id` string structure I defined:
-        # `f"{year}{md}{course}{race_no}"`
-        # Year: 0:4
-        # MD: 4:8
-        # Course: 8:10
-        # RaceNo: 10:12
-
-        r_year = int(record.race_id[0:4])
-        r_md_str = record.race_id[4:8]
-        r_track_str = record.race_id[8:10]
-        # Kai/Nichi are stored in record.
-        r_kai = int(record.kaisai_kai)
-        r_nichi = int(record.kaisai_nichi)
-        r_no = int(record.race_no)
-
-        # data_create_ymd
-        # record.make_date is `date` object or None.
-        if record.make_date:
-            dc_ymd = record.make_date
-        else:
-            dc_ymd = "2000-01-01"  # Fallback
-
-    except ValueError:
-        # If parsing fails, skip or log?
-        # logger.warning(f"CK Parse Int Error: {record.race_id}")
-        return
-
     db.execute(
         raw_sql,
         {
             "dataspec": dataspec,
-            "data_create_ymd": dc_ymd,
-            "year": r_year,
-            "md": r_md_str,
-            "track": r_track_str,
-            "kai": r_kai,
-            "nichi": r_nichi,
-            "race_no": r_no,
+            "data_kbn": record.data_kbn,
+            "data_create_ymd": record.make_date,
+            "kaisai_year": record.kaisai_year,
+            "kaisai_md": record.kaisai_md,
+            "track_cd": record.track_cd,
+            "kaisai_kai": record.kaisai_kai,
+            "kaisai_nichi": record.kaisai_nichi,
+            "race_no": record.race_no,
             "horse_id": record.horse_id,
             "horse_name": record.horse_name,
             "payload": record.payload_raw.encode("cp932", errors="replace"),
@@ -833,7 +836,7 @@ def insert_ck_record(db: Database, dataspec: str, record: CKRecord, filename: st
             entity_prize
         ) VALUES (
             %(dataspec)s, %(dc_ymd)s,
-            %(year)s, %(md)s, %(track)s, %(kai)s, %(nichi)s,
+            %(kaisai_year)s, %(kaisai_md)s, %(track_cd)s, %(kaisai_kai)s, %(kaisai_nichi)s,
             %(race_no)s, %(horse_id)s, %(horse_name)s,
             %(finish_counts)s, %(style_counts)s, %(reg_races)s,
             %(jockey_cd)s, %(trainer_cd)s, %(owner_cd)s, %(breeder_cd)s,
@@ -844,20 +847,29 @@ def insert_ck_record(db: Database, dataspec: str, record: CKRecord, filename: st
             kaisai_md, track_cd, kaisai_kai, 
             kaisai_nichi, race_no, horse_id
         )
-        DO NOTHING
+        DO UPDATE SET
+            horse_name = EXCLUDED.horse_name,
+            finish_counts = EXCLUDED.finish_counts,
+            style_counts = EXCLUDED.style_counts,
+            registered_races_n = EXCLUDED.registered_races_n,
+            jockey_cd = EXCLUDED.jockey_cd,
+            trainer_cd = EXCLUDED.trainer_cd,
+            owner_cd = EXCLUDED.owner_cd,
+            breeder_cd = EXCLUDED.breeder_cd,
+            entity_prize = EXCLUDED.entity_prize
     """
 
     db.execute(
         core_sql,
         {
             "dataspec": dataspec,
-            "dc_ymd": dc_ymd,
-            "year": r_year,
-            "md": r_md_str,
-            "track": r_track_str,
-            "kai": r_kai,
-            "nichi": r_nichi,
-            "race_no": r_no,
+            "dc_ymd": record.make_date,
+            "kaisai_year": record.kaisai_year,
+            "kaisai_md": record.kaisai_md,
+            "track_cd": record.track_cd,
+            "kaisai_kai": record.kaisai_kai,
+            "kaisai_nichi": record.kaisai_nichi,
+            "race_no": record.race_no,
             "horse_id": record.horse_id,
             "horse_name": record.horse_name,
             "finish_counts": _json.dumps(full_stats["finish_counts"]),
@@ -865,9 +877,221 @@ def insert_ck_record(db: Database, dataspec: str, record: CKRecord, filename: st
             "reg_races": full_stats["registered_races"],
             "jockey_cd": record.jockey_code,
             "trainer_cd": record.trainer_code,
-            "owner_cd": record.owner_cd,
+            "owner_cd": record.owner_code,
             "breeder_cd": record.breeder_code,
             "entity_prize": _json.dumps(full_stats["entity_prize"]),
+        },
+    )
+
+    def _summary_counts(counts: list[int]) -> tuple[int, int, int, int, int]:
+        c = (counts + [0] * 6)[:6]
+        c1, c2, c3, c4, c5, cout = c
+        starts = c1 + c2 + c3 + c4 + c5 + cout
+        wins = c1
+        top3 = c1 + c2 + c3
+        top5 = c1 + c2 + c3 + c4 + c5
+        out = cout
+        return starts, wins, top3, top5, out
+
+    def _starts(counts: list[int]) -> int:
+        return sum((counts + [0] * 6)[:6])
+
+    fc = full_stats["finish_counts"]
+    style = full_stats["style_counts"]
+    prize = full_stats["entity_prize"]
+
+    h_total_starts, h_total_wins, h_total_top3, h_total_top5, h_total_out = _summary_counts(
+        record.counts_total
+    )
+    h_central_starts, h_central_wins, h_central_top3, _, _ = _summary_counts(record.counts_central)
+
+    # 距離帯集約 (~1600 / 1601-2200 / 2201~)
+    turf_16down = (
+        _starts(fc["turf_1200_down"])
+        + _starts(fc["turf_1201_1400"])
+        + _starts(fc["turf_1401_1600"])
+    )
+    turf_22down = (
+        _starts(fc["turf_1601_1800"])
+        + _starts(fc["turf_1801_2000"])
+        + _starts(fc["turf_2001_2200"])
+    )
+    turf_22up = (
+        _starts(fc["turf_2201_2400"]) + _starts(fc["turf_2401_2800"]) + _starts(fc["turf_2801_up"])
+    )
+
+    dirt_16down = (
+        _starts(fc["dirt_1200_down"])
+        + _starts(fc["dirt_1201_1400"])
+        + _starts(fc["dirt_1401_1600"])
+    )
+    dirt_22down = (
+        _starts(fc["dirt_1601_1800"])
+        + _starts(fc["dirt_1801_2000"])
+        + _starts(fc["dirt_2001_2200"])
+    )
+    dirt_22up = (
+        _starts(fc["dirt_2201_2400"]) + _starts(fc["dirt_2401_2800"]) + _starts(fc["dirt_2801_up"])
+    )
+
+    j_prize = prize.get("jockey", {}) or {}
+    t_prize = prize.get("trainer", {}) or {}
+    o_prize = prize.get("owner", {}) or {}
+    b_prize = prize.get("breeder", {}) or {}
+
+    feat_sql = """
+        INSERT INTO mart.feat_ck_win (
+            kaisai_year, kaisai_md, track_cd, kaisai_kai, kaisai_nichi, race_no, horse_id,
+            dataspec, data_create_ymd,
+            h_total_starts, h_total_wins, h_total_top3, h_total_top5, h_total_out,
+            h_central_starts, h_central_wins, h_central_top3,
+            h_turf_right_starts, h_turf_left_starts, h_turf_straight_starts,
+            h_dirt_right_starts, h_dirt_left_starts, h_dirt_straight_starts,
+            h_turf_good_starts, h_turf_soft_starts, h_turf_heavy_starts, h_turf_bad_starts,
+            h_dirt_good_starts, h_dirt_soft_starts, h_dirt_heavy_starts, h_dirt_bad_starts,
+            h_turf_16down_starts, h_turf_22down_starts, h_turf_22up_starts,
+            h_dirt_16down_starts, h_dirt_22down_starts, h_dirt_22up_starts,
+            h_style_nige_cnt, h_style_senko_cnt, h_style_sashi_cnt, h_style_oikomi_cnt,
+            h_registered_races_n,
+            j_year_flat_prize_total, j_year_ob_prize_total, j_cum_flat_prize_total,
+            j_cum_ob_prize_total,
+            t_year_flat_prize_total, t_year_ob_prize_total, t_cum_flat_prize_total,
+            t_cum_ob_prize_total,
+            o_year_prize_total, o_cum_prize_total, b_year_prize_total, b_cum_prize_total
+        ) VALUES (
+            %(kaisai_year)s, %(kaisai_md)s, %(track_cd)s, %(kaisai_kai)s,
+            %(kaisai_nichi)s, %(race_no)s, %(horse_id)s,
+            %(dataspec)s, %(data_create_ymd)s,
+            %(h_total_starts)s, %(h_total_wins)s, %(h_total_top3)s,
+            %(h_total_top5)s, %(h_total_out)s,
+            %(h_central_starts)s, %(h_central_wins)s, %(h_central_top3)s,
+            %(h_turf_right_starts)s, %(h_turf_left_starts)s, %(h_turf_straight_starts)s,
+            %(h_dirt_right_starts)s, %(h_dirt_left_starts)s, %(h_dirt_straight_starts)s,
+            %(h_turf_good_starts)s, %(h_turf_soft_starts)s,
+            %(h_turf_heavy_starts)s, %(h_turf_bad_starts)s,
+            %(h_dirt_good_starts)s, %(h_dirt_soft_starts)s,
+            %(h_dirt_heavy_starts)s, %(h_dirt_bad_starts)s,
+            %(h_turf_16down_starts)s, %(h_turf_22down_starts)s, %(h_turf_22up_starts)s,
+            %(h_dirt_16down_starts)s, %(h_dirt_22down_starts)s, %(h_dirt_22up_starts)s,
+            %(h_style_nige_cnt)s, %(h_style_senko_cnt)s,
+            %(h_style_sashi_cnt)s, %(h_style_oikomi_cnt)s,
+            %(h_registered_races_n)s,
+            %(j_year_flat_prize_total)s, %(j_year_ob_prize_total)s,
+            %(j_cum_flat_prize_total)s, %(j_cum_ob_prize_total)s,
+            %(t_year_flat_prize_total)s, %(t_year_ob_prize_total)s,
+            %(t_cum_flat_prize_total)s, %(t_cum_ob_prize_total)s,
+            %(o_year_prize_total)s, %(o_cum_prize_total)s,
+            %(b_year_prize_total)s, %(b_cum_prize_total)s
+        )
+        ON CONFLICT (
+            kaisai_year, kaisai_md, track_cd, kaisai_kai, kaisai_nichi, race_no, horse_id,
+            dataspec, data_create_ymd
+        )
+        DO UPDATE SET
+            h_total_starts = EXCLUDED.h_total_starts,
+            h_total_wins = EXCLUDED.h_total_wins,
+            h_total_top3 = EXCLUDED.h_total_top3,
+            h_total_top5 = EXCLUDED.h_total_top5,
+            h_total_out = EXCLUDED.h_total_out,
+            h_central_starts = EXCLUDED.h_central_starts,
+            h_central_wins = EXCLUDED.h_central_wins,
+            h_central_top3 = EXCLUDED.h_central_top3,
+            h_turf_right_starts = EXCLUDED.h_turf_right_starts,
+            h_turf_left_starts = EXCLUDED.h_turf_left_starts,
+            h_turf_straight_starts = EXCLUDED.h_turf_straight_starts,
+            h_dirt_right_starts = EXCLUDED.h_dirt_right_starts,
+            h_dirt_left_starts = EXCLUDED.h_dirt_left_starts,
+            h_dirt_straight_starts = EXCLUDED.h_dirt_straight_starts,
+            h_turf_good_starts = EXCLUDED.h_turf_good_starts,
+            h_turf_soft_starts = EXCLUDED.h_turf_soft_starts,
+            h_turf_heavy_starts = EXCLUDED.h_turf_heavy_starts,
+            h_turf_bad_starts = EXCLUDED.h_turf_bad_starts,
+            h_dirt_good_starts = EXCLUDED.h_dirt_good_starts,
+            h_dirt_soft_starts = EXCLUDED.h_dirt_soft_starts,
+            h_dirt_heavy_starts = EXCLUDED.h_dirt_heavy_starts,
+            h_dirt_bad_starts = EXCLUDED.h_dirt_bad_starts,
+            h_turf_16down_starts = EXCLUDED.h_turf_16down_starts,
+            h_turf_22down_starts = EXCLUDED.h_turf_22down_starts,
+            h_turf_22up_starts = EXCLUDED.h_turf_22up_starts,
+            h_dirt_16down_starts = EXCLUDED.h_dirt_16down_starts,
+            h_dirt_22down_starts = EXCLUDED.h_dirt_22down_starts,
+            h_dirt_22up_starts = EXCLUDED.h_dirt_22up_starts,
+            h_style_nige_cnt = EXCLUDED.h_style_nige_cnt,
+            h_style_senko_cnt = EXCLUDED.h_style_senko_cnt,
+            h_style_sashi_cnt = EXCLUDED.h_style_sashi_cnt,
+            h_style_oikomi_cnt = EXCLUDED.h_style_oikomi_cnt,
+            h_registered_races_n = EXCLUDED.h_registered_races_n,
+            j_year_flat_prize_total = EXCLUDED.j_year_flat_prize_total,
+            j_year_ob_prize_total = EXCLUDED.j_year_ob_prize_total,
+            j_cum_flat_prize_total = EXCLUDED.j_cum_flat_prize_total,
+            j_cum_ob_prize_total = EXCLUDED.j_cum_ob_prize_total,
+            t_year_flat_prize_total = EXCLUDED.t_year_flat_prize_total,
+            t_year_ob_prize_total = EXCLUDED.t_year_ob_prize_total,
+            t_cum_flat_prize_total = EXCLUDED.t_cum_flat_prize_total,
+            t_cum_ob_prize_total = EXCLUDED.t_cum_ob_prize_total,
+            o_year_prize_total = EXCLUDED.o_year_prize_total,
+            o_cum_prize_total = EXCLUDED.o_cum_prize_total,
+            b_year_prize_total = EXCLUDED.b_year_prize_total,
+            b_cum_prize_total = EXCLUDED.b_cum_prize_total
+    """
+
+    db.execute(
+        feat_sql,
+        {
+            "kaisai_year": record.kaisai_year,
+            "kaisai_md": record.kaisai_md,
+            "track_cd": record.track_cd,
+            "kaisai_kai": record.kaisai_kai,
+            "kaisai_nichi": record.kaisai_nichi,
+            "race_no": record.race_no,
+            "horse_id": record.horse_id,
+            "dataspec": dataspec,
+            "data_create_ymd": record.make_date,
+            "h_total_starts": h_total_starts,
+            "h_total_wins": h_total_wins,
+            "h_total_top3": h_total_top3,
+            "h_total_top5": h_total_top5,
+            "h_total_out": h_total_out,
+            "h_central_starts": h_central_starts,
+            "h_central_wins": h_central_wins,
+            "h_central_top3": h_central_top3,
+            "h_turf_right_starts": _starts(fc["turf_right"]),
+            "h_turf_left_starts": _starts(fc["turf_left"]),
+            "h_turf_straight_starts": _starts(fc["turf_str"]),
+            "h_dirt_right_starts": _starts(fc["dirt_right"]),
+            "h_dirt_left_starts": _starts(fc["dirt_left"]),
+            "h_dirt_straight_starts": _starts(fc["dirt_str"]),
+            "h_turf_good_starts": _starts(fc["turf_good"]),
+            "h_turf_soft_starts": _starts(fc["turf_soft"]),
+            "h_turf_heavy_starts": _starts(fc["turf_heavy"]),
+            "h_turf_bad_starts": _starts(fc["turf_bad"]),
+            "h_dirt_good_starts": _starts(fc["dirt_good"]),
+            "h_dirt_soft_starts": _starts(fc["dirt_soft"]),
+            "h_dirt_heavy_starts": _starts(fc["dirt_heavy"]),
+            "h_dirt_bad_starts": _starts(fc["dirt_bad"]),
+            "h_turf_16down_starts": turf_16down,
+            "h_turf_22down_starts": turf_22down,
+            "h_turf_22up_starts": turf_22up,
+            "h_dirt_16down_starts": dirt_16down,
+            "h_dirt_22down_starts": dirt_22down,
+            "h_dirt_22up_starts": dirt_22up,
+            "h_style_nige_cnt": int(style.get("nige") or 0),
+            "h_style_senko_cnt": int(style.get("senko") or 0),
+            "h_style_sashi_cnt": int(style.get("sashi") or 0),
+            "h_style_oikomi_cnt": int(style.get("oikomi") or 0),
+            "h_registered_races_n": int(full_stats.get("registered_races") or 0),
+            "j_year_flat_prize_total": int(j_prize.get("year_flat") or 0),
+            "j_year_ob_prize_total": int(j_prize.get("year_obs") or 0),
+            "j_cum_flat_prize_total": int(j_prize.get("cum_flat") or 0),
+            "j_cum_ob_prize_total": int(j_prize.get("cum_obs") or 0),
+            "t_year_flat_prize_total": int(t_prize.get("year_flat") or 0),
+            "t_year_ob_prize_total": int(t_prize.get("year_obs") or 0),
+            "t_cum_flat_prize_total": int(t_prize.get("cum_flat") or 0),
+            "t_cum_ob_prize_total": int(t_prize.get("cum_obs") or 0),
+            "o_year_prize_total": int(o_prize.get("year") or 0),
+            "o_cum_prize_total": int(o_prize.get("cum") or 0),
+            "b_year_prize_total": int(b_prize.get("year") or 0),
+            "b_cum_prize_total": int(b_prize.get("cum") or 0),
         },
     )
 
@@ -947,18 +1171,17 @@ def process_file(db: Database, file_path: Path) -> dict[str, int]:
     pass2_count = 0
     for record in load_jsonl(file_path):
         pass2_count += 1
+        rec_id = record.get("rec_id", "")
+        payload = record.get("payload", "")
         try:
             # rawはPass 1で入れているのでスキップ
-
-            rec_id = record["rec_id"]
-            payload = record["payload"]
 
             if rec_id == "RA":
                 continue  # 処理済み
 
             elif rec_id == "CK":
                 ck = CKRecord.parse(payload)
-                insert_ck_record(db, dataspec, ck, record["filename"])
+                insert_ck_record(db, dataspec, ck, record.get("filename", ""))
                 stats["ck"] += 1
 
             elif rec_id == "SE":
@@ -973,12 +1196,13 @@ def process_file(db: Database, file_path: Path) -> dict[str, int]:
                     stats["payout"] += 1
 
             elif rec_id == "O1":
+                # dataspec により投入先を分岐:
+                # - 0B41: 時系列オッズ → core.o1_*
+                # - それ以外: 最終オッズ → core.odds_final
                 if dataspec == "0B41":
-                    # 時系列オッズ → core.o1_header / core.o1_win
-                    ts_list = OddsTimeSeriesRecord.parse(payload)
-                    stats["o1_ts"] += upsert_o1_timeseries(db, ts_list)
+                    ts_records = OddsTimeSeriesRecord.parse(payload)
+                    stats["o1_ts"] += upsert_o1_timeseries(db, ts_records)
                 else:
-                    # 確定オッズ → core.odds_final
                     odds_list = OddsRecord.parse(payload)
                     for o in odds_list:
                         upsert_odds(db, o)
@@ -1026,9 +1250,9 @@ def process_file(db: Database, file_path: Path) -> dict[str, int]:
                     mining_list = DMRecord.parse(payload)
                 else:
                     mining_list = TMRecord.parse(payload)
-                for mining in mining_list:
-                    insert_mining_record(db, rec_id, mining)
-                    stats["mining"] += 1
+                for m in mining_list:
+                    insert_mining_record(db, rec_id, m)
+                stats["mining"] += len(mining_list)
 
             elif rec_id in ("WE", "AV", "JC", "TC", "CC"):
                 event = EventChangeRecord.parse(payload)

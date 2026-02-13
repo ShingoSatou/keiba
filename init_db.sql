@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS raw.jv_raw (
     rec_id       CHAR(2) NOT NULL,            -- レコード種別 (payload先頭2文字: RA, SE, HR等)
     filename     TEXT,                        -- JVReadから取得したファイル名
     payload      TEXT NOT NULL,               -- 固定長文字列（Shift_JIS→UTF-8変換後）
-    payload_hash BYTEA                        -- 重複排除用ハッシュ（任意）
+    payload_hash BYTEA NOT NULL,              -- 重複排除用ハッシュ（sha256, 常に埋める）
+    CONSTRAINT uq_jv_raw_dedup UNIQUE (dataspec, rec_id, payload_hash)
 );
 
 CREATE INDEX IF NOT EXISTS idx_jv_raw_ingested_at ON raw.jv_raw(ingested_at);
