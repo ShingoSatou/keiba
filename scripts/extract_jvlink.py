@@ -109,6 +109,7 @@ def jv_open_with_logging(jv, dataspec: str, from_date: str, option: int):
     print(f"   option    = {option}")
 
     # JVOpen(dataspec, fromtime, option, readcount, downloadcount, lastfiletimestamp)
+    # JVOpen(dataspec, fromtime, option, readcount, downloadcount, lastfiletimestamp)
     # win32com では ダミー引数 (0, 0, "") を渡し、戻り値タプルで out パラメータを受け取る
     ret = jv.JVOpen(dataspec, from_date, option, 0, 0, "")
 
