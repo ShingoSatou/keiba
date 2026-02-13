@@ -109,6 +109,11 @@ CREATE TABLE IF NOT EXISTS core.runner (
     body_weight_diff SMALLINT,                -- 増減 (kg)
     scratch_flag     BOOLEAN NOT NULL DEFAULT FALSE,  -- 出走取消フラグ
     entry_status     SMALLINT,                -- 出走確定/除外 コード
+    data_kubun       CHAR(2),                 -- データ区分 (1:B確定前, A:地方, B2:海外 等)
+    trainer_code_raw CHAR(5),                 -- 調教師コード生値（FK不成立時の監査用）
+    trainer_name_abbr TEXT,                    -- 調教師名略称
+    jockey_code_raw  CHAR(5),                 -- 騎手コード生値（FK不成立時の監査用）
+    jockey_name_abbr TEXT,                     -- 騎手名略称
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (race_id, horse_id),

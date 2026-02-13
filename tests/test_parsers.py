@@ -377,3 +377,123 @@ class TestHorseExclusionRecordParser:
         assert record.horse_id == "2023100239"
         assert record.horse_name.strip() == "ファストワーカー"
         assert record.flags == "00110"
+
+
+class TestDMRecordParser:
+    """DMRecord (DM) パーサーのテスト"""
+
+    def test_parse_basic(self):
+        """繰返し構造から馬番・走破タイムを正しくパースすること"""
+        from app.infrastructure.parsers import DMRecord
+
+        # DM ペイロード構築 (303バイト)
+        # pos 0-1: レコード種別ID "DM"
+        # pos 2: データ区分 (1=前日予想)
+        # pos 3-10: データ作成年月日 "20260101"
+        # pos 11-26: 開催年(4)+月日(4)+競馬場(2)+回(2)+日目(2)+R番(2)
+        # pos 27-30: データ作成時分 "1030"
+        # pos 31-300: マイニング予想(15バイト x 18)
+        b = bytearray(303)
+        b[0:2] = b"DM"
+        b[2:3] = b"1"
+        b[3:11] = b"20260101"
+        b[11:15] = b"2026"  # 開催年
+        b[15:19] = b"0104"  # 開催月日
+        b[19:21] = b"06"  # 競馬場 (中山=06)
+        b[21:23] = b"01"  # 回次
+        b[23:25] = b"01"  # 日目
+        b[25:27] = b"12"  # レース番号
+        b[27:31] = b"1030"  # データ作成時分
+
+        # 馬番1: タイム "10050" (1分00秒50)
+        off = 31
+        b[off : off + 2] = b"01"
+        b[off + 2 : off + 7] = b"10050"
+
+        # 馬番5: タイム "10100" (1分01秒00)
+        off = 31 + 4 * 15  # 5番目の馬 (index=4)
+        b[off : off + 2] = b"05"
+        b[off + 2 : off + 7] = b"10100"
+
+        payload = b.decode("cp932")
+        records = DMRecord.parse(payload)
+
+        # 馬番が設定されたエントリのみ返される
+        assert len(records) == 2
+
+        # 馬番1
+        r1 = records[0]
+        assert r1.horse_no == 1
+        assert r1.dm_time_x10 == 10050
+        assert r1.data_kbn == 1
+        # race_id = 20260104 * 10000 + 06 * 100 + 12 = 202601040612
+        assert r1.race_id == 202601040612
+
+        # 馬番5
+        r2 = records[1]
+        assert r2.horse_no == 5
+        assert r2.dm_time_x10 == 10100
+
+    def test_parse_empty_horses_skipped(self):
+        """馬番が0またはスペースのエントリはスキップされること"""
+        from app.infrastructure.parsers import DMRecord
+
+        b = bytearray(303)
+        b[0:2] = b"DM"
+        b[2:3] = b"1"
+        b[3:11] = b"20260101"
+        b[11:27] = b"2026010406010112"
+        b[27:31] = b"1030"
+        # 全スロット空 → 結果0件
+        payload = b.decode("cp932")
+        records = DMRecord.parse(payload)
+        assert len(records) == 0
+
+
+class TestTMRecordParser:
+    """TMRecord (TM) パーサーのテスト"""
+
+    def test_parse_basic(self):
+        """繰返し構造から馬番・予測スコアを正しくパースすること"""
+        from app.infrastructure.parsers import TMRecord
+
+        # TM ペイロード構築 (141バイト)
+        b = bytearray(141)
+        b[0:2] = b"TM"
+        b[2:3] = b"2"  # データ区分 (2=当日予想)
+        b[3:11] = b"20260101"
+        b[11:15] = b"2026"
+        b[15:19] = b"0104"
+        b[19:21] = b"05"  # 競馬場 (東京=05)
+        b[21:23] = b"02"
+        b[23:25] = b"03"
+        b[25:27] = b"11"  # レース番号
+        b[27:31] = b"1400"
+
+        # 馬番3: スコア "0853" (= 85.3)
+        off = 31 + 2 * 6  # index=2
+        b[off : off + 2] = b"03"
+        b[off + 2 : off + 6] = b"0853"
+
+        # 馬番7: スコア "0421" (= 42.1)
+        off = 31 + 6 * 6  # index=6
+        b[off : off + 2] = b"07"
+        b[off + 2 : off + 6] = b"0421"
+
+        payload = b.decode("cp932")
+        records = TMRecord.parse(payload)
+
+        assert len(records) == 2
+
+        # 馬番3
+        r1 = records[0]
+        assert r1.horse_no == 3
+        assert r1.tm_score == 853
+        assert r1.data_kbn == 2
+        # race_id = 20260104 * 10000 + 05 * 100 + 11 = 202601040511
+        assert r1.race_id == 202601040511
+
+        # 馬番7
+        r2 = records[1]
+        assert r2.horse_no == 7
+        assert r2.tm_score == 421

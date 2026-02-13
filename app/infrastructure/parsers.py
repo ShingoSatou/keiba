@@ -1668,15 +1668,29 @@ class CKRecord:
 # =============================================================================
 # DM: タイム型マイニング (MING)
 # =============================================================================
-DM_DATA_KBN_START = 2
+# 仕様: 28.タイム型データマイニング予想 レコード長303バイト
+# 位置は1-indexed → 0-indexed に変換して使用
+DM_DATA_KBN_START = 2  # 仕様:位置3, 1バイト
 DM_DATA_KBN_LEN = 1
-DM_RACE_KEY_START = 11
+DM_RACE_KEY_START = 11  # 仕様:位置12(開催年)〜位置27(レース番号末尾), 16バイト
 DM_RACE_KEY_LEN = 16
+DM_MINING_START = 31  # 仕様:位置32(1-indexed), 繰返18回, 各15バイト
+DM_MINING_REPEAT = 18
+DM_MINING_ITEM_LEN = 15
+# 繰返内の相対オフセット (0-indexed)
+DM_HORSE_NO_OFF = 0  # 馬番 2バイト
+DM_HORSE_NO_LEN = 2
+DM_TIME_OFF = 2  # 予想走破タイム 5バイト (9分99秒99)
+DM_TIME_LEN = 5
+DM_ERR_PLUS_OFF = 7  # 予想誤差+ 4バイト
+DM_ERR_PLUS_LEN = 4
+DM_ERR_MINUS_OFF = 11  # 予想誤差- 4バイト
+DM_ERR_MINUS_LEN = 4
 
 
 @dataclass
 class DMRecord:
-    """DMレコード: タイム型マイニング"""
+    """DMレコード: タイム型マイニング（馬ごと）"""
 
     race_id: int
     horse_no: int
@@ -1686,18 +1700,19 @@ class DMRecord:
     payload_raw: str
 
     @classmethod
-    def parse(cls, payload: str, race_id: int = 0) -> DMRecord:
-        """DMレコードをパース（簡易版）"""
+    def parse(cls, payload: str, race_id: int = 0) -> list[DMRecord]:
+        """DMレコードをパースし、馬ごとにリストで返す（最大18頭）"""
         try:
             b_payload = payload.encode("cp932")
         except UnicodeEncodeError:
             b_payload = payload.encode("cp932", errors="replace")
 
         if len(b_payload) < 50:
-            b_payload = b_payload.ljust(50, b" ")
+            b_payload = b_payload.ljust(303, b" ")
 
         data_kbn = _slice_byte_int(b_payload, DM_DATA_KBN_START, DM_DATA_KBN_LEN)
 
+        # race_id を構築
         if race_id == 0:
             race_key = _slice_byte_decode(b_payload, DM_RACE_KEY_START, DM_RACE_KEY_LEN)
             if len(race_key) >= 16:
@@ -1712,28 +1727,54 @@ class DMRecord:
                 except ValueError:
                     pass
 
-        return cls(
-            race_id=race_id,
-            horse_no=0,
-            data_kbn=data_kbn,
-            dm_time_x10=None,
-            dm_rank=None,
-            payload_raw=payload,
-        )
+        # 繰返し構造から馬ごとのレコードを抽出
+        results: list[DMRecord] = []
+        for i in range(DM_MINING_REPEAT):
+            base = DM_MINING_START + i * DM_MINING_ITEM_LEN
+            horse_no = _slice_byte_int(b_payload, base + DM_HORSE_NO_OFF, DM_HORSE_NO_LEN)
+            # 馬番が0またはNoneはスキップ（空エントリ）
+            if not horse_no:
+                continue
+
+            # 予想走破タイム: 5桁 (例 "10050" → 1分00秒50 → 6050 = 60.50秒×10)
+            # 生値をそのまま整数で保持 (x10 = 0.1秒単位)
+            dm_time_raw = _slice_byte_int(b_payload, base + DM_TIME_OFF, DM_TIME_LEN)
+
+            results.append(
+                cls(
+                    race_id=race_id,
+                    horse_no=horse_no,
+                    data_kbn=data_kbn,
+                    dm_time_x10=dm_time_raw,
+                    dm_rank=None,  # 順位は別途計算が必要
+                    payload_raw=payload,
+                )
+            )
+
+        return results
 
 
 # =============================================================================
 # TM: 対戦型マイニング (MING)
 # =============================================================================
-TM_DATA_KBN_START = 2
+# 仕様: 29.対戦型データマイニング予想 レコード長141バイト
+TM_DATA_KBN_START = 2  # 仕様:位置3, 1バイト
 TM_DATA_KBN_LEN = 1
-TM_RACE_KEY_START = 11
+TM_RACE_KEY_START = 11  # 仕様:位置12〜27, 16バイト
 TM_RACE_KEY_LEN = 16
+TM_MINING_START = 31  # 仕様:位置32(1-indexed), 繰返18回, 各6バイト
+TM_MINING_REPEAT = 18
+TM_MINING_ITEM_LEN = 6
+# 繰返内の相対オフセット (0-indexed)
+TM_HORSE_NO_OFF = 0  # 馬番 2バイト
+TM_HORSE_NO_LEN = 2
+TM_SCORE_OFF = 2  # 予測スコア 4バイト (000.0〜100.0)
+TM_SCORE_LEN = 4
 
 
 @dataclass
 class TMRecord:
-    """TMレコード: 対戦型マイニング"""
+    """TMレコード: 対戦型マイニング（馬ごと）"""
 
     race_id: int
     horse_no: int
@@ -1743,18 +1784,19 @@ class TMRecord:
     payload_raw: str
 
     @classmethod
-    def parse(cls, payload: str, race_id: int = 0) -> TMRecord:
-        """TMレコードをパース（簡易版）"""
+    def parse(cls, payload: str, race_id: int = 0) -> list[TMRecord]:
+        """TMレコードをパースし、馬ごとにリストで返す（最大18頭）"""
         try:
             b_payload = payload.encode("cp932")
         except UnicodeEncodeError:
             b_payload = payload.encode("cp932", errors="replace")
 
         if len(b_payload) < 50:
-            b_payload = b_payload.ljust(50, b" ")
+            b_payload = b_payload.ljust(141, b" ")
 
         data_kbn = _slice_byte_int(b_payload, TM_DATA_KBN_START, TM_DATA_KBN_LEN)
 
+        # race_id を構築
         if race_id == 0:
             race_key = _slice_byte_decode(b_payload, TM_RACE_KEY_START, TM_RACE_KEY_LEN)
             if len(race_key) >= 16:
@@ -1769,14 +1811,30 @@ class TMRecord:
                 except ValueError:
                     pass
 
-        return cls(
-            race_id=race_id,
-            horse_no=0,
-            data_kbn=data_kbn,
-            tm_score=None,
-            tm_rank=None,
-            payload_raw=payload,
-        )
+        # 繰返し構造から馬ごとのレコードを抽出
+        results: list[TMRecord] = []
+        for i in range(TM_MINING_REPEAT):
+            base = TM_MINING_START + i * TM_MINING_ITEM_LEN
+            horse_no = _slice_byte_int(b_payload, base + TM_HORSE_NO_OFF, TM_HORSE_NO_LEN)
+            # 馬番が0またはNoneはスキップ（空エントリ）
+            if not horse_no:
+                continue
+
+            # 予測スコア: 4桁 (例 "0853" → 85.3)
+            tm_score_raw = _slice_byte_int(b_payload, base + TM_SCORE_OFF, TM_SCORE_LEN)
+
+            results.append(
+                cls(
+                    race_id=race_id,
+                    horse_no=horse_no,
+                    data_kbn=data_kbn,
+                    tm_score=tm_score_raw,
+                    tm_rank=None,  # 順位は別途計算が必要
+                    payload_raw=payload,
+                )
+            )
+
+        return results
 
 
 # =============================================================================
