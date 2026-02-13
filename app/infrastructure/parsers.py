@@ -1778,6 +1778,7 @@ class DMRecord:
             if minutes == 0 and seconds == 0 and centisec == 0:
                 return None
             return minutes * 600 + seconds * 10 + (centisec // 10)
+
         # 繰返し構造から馬ごとのレコードを抽出
         results: list[DMRecord] = []
         for i in range(DM_MINING_REPEAT):
