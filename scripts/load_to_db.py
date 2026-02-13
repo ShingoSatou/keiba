@@ -973,10 +973,16 @@ def process_file(db: Database, file_path: Path) -> dict[str, int]:
                     stats["payout"] += 1
 
             elif rec_id == "O1":
-                odds_list = OddsRecord.parse(payload)
-                for o in odds_list:
-                    upsert_odds(db, o)
-                    stats["odds"] += 1
+                if dataspec == "0B41":
+                    # 時系列オッズ → core.o1_header / core.o1_win
+                    ts_list = OddsTimeSeriesRecord.parse(payload)
+                    stats["o1_ts"] += upsert_o1_timeseries(db, ts_list)
+                else:
+                    # 確定オッズ → core.odds_final
+                    odds_list = OddsRecord.parse(payload)
+                    for o in odds_list:
+                        upsert_odds(db, o)
+                        stats["odds"] += 1
 
             elif rec_id == "JG":
                 horse = HorseExclusionRecord.parse(payload)
@@ -1015,19 +1021,14 @@ def process_file(db: Database, file_path: Path) -> dict[str, int]:
                 insert_training_record(db, rec_id, training)
                 stats["training"] += 1
 
-            elif rec_id == "CK":
-                CKRecord.parse(payload)  # パース検証のみ
-                # CKは簡易版のため payload_raw で保存
-                stats.setdefault("ck", 0)
-                stats["ck"] += 1
-
             elif rec_id in ("DM", "TM"):
                 if rec_id == "DM":
-                    mining = DMRecord.parse(payload)
+                    mining_list = DMRecord.parse(payload)
                 else:
-                    mining = TMRecord.parse(payload)
-                insert_mining_record(db, rec_id, mining)
-                stats["mining"] += 1
+                    mining_list = TMRecord.parse(payload)
+                for mining in mining_list:
+                    insert_mining_record(db, rec_id, mining)
+                    stats["mining"] += 1
 
             elif rec_id in ("WE", "AV", "JC", "TC", "CC"):
                 event = EventChangeRecord.parse(payload)
