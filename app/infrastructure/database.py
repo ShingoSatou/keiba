@@ -14,18 +14,34 @@ import psycopg
 from psycopg import Connection
 from psycopg.rows import dict_row
 
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover
+
+    def load_dotenv(*args, **kwargs):
+        return False
+
+
+# .env を読み込んで DATABASE_URL / DB_* を利用可能にする
+load_dotenv()
+
 
 def get_connection_string() -> str:
     """
     環境変数または既定値から接続文字列を生成
 
     環境変数:
+        DATABASE_URL: 接続URL（指定時は最優先）
         DB_HOST: ホスト名 (default: 127.0.0.1)
         DB_PORT: ポート (default: 5432)
         DB_NAME: データベース名 (default: keiba)
         DB_USER: ユーザー名 (default: jv_ingest)
         DB_PASSWORD: パスワード (default: keiba_pass)
     """
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        return database_url.strip()
+
     host = os.getenv("DB_HOST", "127.0.0.1")
     port = os.getenv("DB_PORT", "5432")
     dbname = os.getenv("DB_NAME", "keiba")

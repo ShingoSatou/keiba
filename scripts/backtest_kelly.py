@@ -9,10 +9,16 @@ from __future__ import annotations
 import argparse
 import logging
 import pickle
+import sys
 from pathlib import Path
 
 import pandas as pd
 from tabulate import tabulate
+
+# プロジェクトルート設定
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.infrastructure.database import Database
 from app.services.betting_strategy import KellyStrategy
@@ -21,7 +27,6 @@ from scripts.train import TARGET_COL, LGBMClassifierWrapper, _split_by_race_id  
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MODEL_DIR = PROJECT_ROOT / "models"
 DATA_DIR = PROJECT_ROOT / "data"
 

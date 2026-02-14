@@ -332,7 +332,7 @@ def upsert_payout(db: Database, payout: PayoutRecord) -> None:
     )
 
 
-def upsert_odds(db: Database, odds: OddsRecord) -> None:
+def upsert_odds(db: Database, odds: OddsRecord) -> int:
     """core.odds_finalにデータを挿入/更新
 
     Note: O1レコードにはhorse_idがないため、core.runnerからhorse_noで引いて解決する
@@ -340,16 +340,20 @@ def upsert_odds(db: Database, odds: OddsRecord) -> None:
     """
     if odds.bet_type == 1:  # Win
         sql = """
-            INSERT INTO core.odds_final (race_id, horse_id, odds_win, pop_win)
-            SELECT %(race_id)s, horse_id, %(odds_win)s, %(pop_win)s
-            FROM core.runner
-            WHERE race_id = %(race_id)s AND horse_no = %(horse_no)s
-            ON CONFLICT (race_id, horse_id) DO UPDATE SET
-                odds_win = EXCLUDED.odds_win,
-                pop_win = EXCLUDED.pop_win,
-                updated_at = now()
+            WITH upserted AS (
+                INSERT INTO core.odds_final (race_id, horse_id, odds_win, pop_win)
+                SELECT %(race_id)s, horse_id, %(odds_win)s, %(pop_win)s
+                FROM core.runner
+                WHERE race_id = %(race_id)s AND horse_no = %(horse_no)s
+                ON CONFLICT (race_id, horse_id) DO UPDATE SET
+                    odds_win = EXCLUDED.odds_win,
+                    pop_win = EXCLUDED.pop_win,
+                    updated_at = now()
+                RETURNING 1
+            )
+            SELECT COUNT(*) AS n FROM upserted
         """
-        db.execute(
+        result = db.fetch_one(
             sql,
             {
                 "race_id": odds.race_id,
@@ -358,21 +362,26 @@ def upsert_odds(db: Database, odds: OddsRecord) -> None:
                 "pop_win": odds.popularity,
             },
         )
+        return int(result["n"]) if result else 0
     elif odds.bet_type == 2:  # Place
         sql = """
-            INSERT INTO core.odds_final
-                (race_id, horse_id, odds_place_low, odds_place_high, pop_place)
-            SELECT %(race_id)s, horse_id, %(odds_place_low)s,
-                %(odds_place_high)s, %(pop_place)s
-            FROM core.runner
-            WHERE race_id = %(race_id)s AND horse_no = %(horse_no)s
-            ON CONFLICT (race_id, horse_id) DO UPDATE SET
-                odds_place_low = EXCLUDED.odds_place_low,
-                odds_place_high = EXCLUDED.odds_place_high,
-                pop_place = EXCLUDED.pop_place,
-                updated_at = now()
+            WITH upserted AS (
+                INSERT INTO core.odds_final
+                    (race_id, horse_id, odds_place_low, odds_place_high, pop_place)
+                SELECT %(race_id)s, horse_id, %(odds_place_low)s,
+                    %(odds_place_high)s, %(pop_place)s
+                FROM core.runner
+                WHERE race_id = %(race_id)s AND horse_no = %(horse_no)s
+                ON CONFLICT (race_id, horse_id) DO UPDATE SET
+                    odds_place_low = EXCLUDED.odds_place_low,
+                    odds_place_high = EXCLUDED.odds_place_high,
+                    pop_place = EXCLUDED.pop_place,
+                    updated_at = now()
+                RETURNING 1
+            )
+            SELECT COUNT(*) AS n FROM upserted
         """
-        db.execute(
+        result = db.fetch_one(
             sql,
             {
                 "race_id": odds.race_id,
@@ -382,7 +391,9 @@ def upsert_odds(db: Database, odds: OddsRecord) -> None:
                 "pop_place": odds.popularity,
             },
         )
+        return int(result["n"]) if result else 0
     # bet_type=3 (Bracket) は現状スキップ（horse_idへの変換が困難）
+    return 0
 
 
 def upsert_horse(db: Database, horse: HorseExclusionRecord) -> None:
@@ -1108,6 +1119,11 @@ def process_file(db: Database, file_path: Path) -> dict[str, int]:
         "runner": 0,
         "payout": 0,
         "odds": 0,
+        "odds_parsed": 0,
+        "odds_upserted": 0,
+        "odds_missing_runner": 0,
+        "odds_skipped_bracket": 0,
+        "o1_deferred_records": 0,
         "horse": 0,
         "o1_ts": 0,
         "wh": 0,
@@ -1169,6 +1185,7 @@ def process_file(db: Database, file_path: Path) -> dict[str, int]:
     # ただし stats["raw"] が2倍になるのを防ぐため、Pass 2では raw はスキップ
 
     pass2_count = 0
+    deferred_o1_payloads: list[str] = []
     for record in load_jsonl(file_path):
         pass2_count += 1
         rec_id = record.get("rec_id", "")
@@ -1203,10 +1220,9 @@ def process_file(db: Database, file_path: Path) -> dict[str, int]:
                     ts_records = OddsTimeSeriesRecord.parse(payload)
                     stats["o1_ts"] += upsert_o1_timeseries(db, ts_records)
                 else:
-                    odds_list = OddsRecord.parse(payload)
-                    for o in odds_list:
-                        upsert_odds(db, o)
-                        stats["odds"] += 1
+                    # O1がSEより先に出現するファイルがあるため、runner投入後に遅延処理する
+                    deferred_o1_payloads.append(payload)
+                    stats["o1_deferred_records"] += 1
 
             elif rec_id == "JG":
                 horse = HorseExclusionRecord.parse(payload)
@@ -1270,6 +1286,58 @@ def process_file(db: Database, file_path: Path) -> dict[str, int]:
         if pass2_count % 1000 == 0:
             db.connect().commit()
             logger.info(f"  {pass2_count} 件スキャン完了...")
+
+    if deferred_o1_payloads:
+        logger.info(
+            f"  Pass 2.5: Processing deferred O1 records... {len(deferred_o1_payloads):,} 件"
+        )
+        missing_log_limit = 20
+        missing_log_count = 0
+
+        for idx, payload in enumerate(deferred_o1_payloads, 1):
+            try:
+                odds_list = OddsRecord.parse(payload)
+                stats["odds_parsed"] += len(odds_list)
+
+                for o in odds_list:
+                    if o.bet_type == 3:
+                        stats["odds_skipped_bracket"] += 1
+                        continue
+                    if o.bet_type not in (1, 2):
+                        continue
+
+                    affected = upsert_odds(db, o)
+                    stats["odds"] += affected
+                    stats["odds_upserted"] += affected
+
+                    if affected == 0:
+                        stats["odds_missing_runner"] += 1
+                        if missing_log_count < missing_log_limit:
+                            logger.warning(
+                                "O1 odds skipped (runner not found): race_id=%s "
+                                "horse_no=%s bet_type=%s",
+                                o.race_id,
+                                o.horse_no,
+                                o.bet_type,
+                            )
+                            missing_log_count += 1
+            except Exception as e:
+                db.connect().rollback()
+                if stats["errors"] < 20:
+                    logger.warning(f"Deferred O1 Error: {e}")
+                stats["errors"] += 1
+
+            if idx % 500 == 0:
+                db.connect().commit()
+                logger.info(f"  deferred O1: {idx:,}/{len(deferred_o1_payloads):,} 件")
+
+        logger.info(
+            "  deferred O1 summary: parsed=%s upserted=%s missing_runner=%s skipped_bracket=%s",
+            stats["odds_parsed"],
+            stats["odds_upserted"],
+            stats["odds_missing_runner"],
+            stats["odds_skipped_bracket"],
+        )
 
     db.connect().commit()
     return stats

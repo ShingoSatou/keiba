@@ -20,10 +20,17 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 from datetime import date, timedelta
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+# プロジェクトルート設定
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.infrastructure.database import Database
 
