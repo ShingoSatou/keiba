@@ -26,12 +26,19 @@ JVRTOpenを使用してリアルタイム系データ（時系列オッズ等）
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import sys
 import time
 import traceback
 from datetime import datetime
 from pathlib import Path
+
+# Windows cp932 環境で絵文字/日本語を正しく出力するためのワークアラウンド
+# WSL interop 経由の subprocess では PYTHONIOENCODING が効かない場合がある
+if sys.platform == "win32" and hasattr(sys.stdout, "buffer"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 # プロジェクトルート設定
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
