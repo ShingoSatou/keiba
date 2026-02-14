@@ -74,6 +74,7 @@
 
 | env | default | 説明 |
 |---|---|---|
+| `DATABASE_URL` | `-` | PostgreSQL接続URL（指定時は最優先） |
 | `DB_HOST` | `127.0.0.1` | PostgreSQLホスト |
 | `DB_PORT` | `5432` | ポート |
 | `DB_NAME` | `keiba` | DB名 |
@@ -136,6 +137,14 @@ uv run python scripts/load_to_db.py --input "data/DIFF_*.jsonl"
   * 1000レコードごとに commit
   * 例外は rollback して継続（一定件数まで warning を出す）
 
+#### Pass 2.5（O1遅延処理: `dataspec != "0B41"`）
+
+* 背景: `RACE` の `O1` は入力ファイルによって `SE` より先に出現することがある。`O1` は `core.runner (race_id+horse_no)` で `horse_id` を解決するため、順序依存で 0 行投入になり得る。
+* 動作:
+  * Pass 2 では `O1`（最終オッズ）は payload を一旦バッファする
+  * `SE` の投入が終わった後に、バッファした `O1` をまとめて `core.odds_final` へUPSERTする
+  * `0B41`（時系列O1）は `core.o1_*` への投入で runner 依存が無いため、従来どおり即時処理する
+
 ### 5.4 マスタキャッシュ（FK回避）
 
 * 起動時に `core.jockey` と `core.trainer` の ID を `SELECT` して set 化する。
@@ -191,10 +200,9 @@ uv run python scripts/load_to_db.py --input "data/DIFF_*.jsonl"
 
 ### 7.2 raw.jv_raw（注意）
 
-* 実装は `ON CONFLICT DO NOTHING` を使うが、`init_db.sql` 上 `raw.jv_raw` に重複排除のユニーク制約が無いため、**現状は重複が入り得る**。
-* 対策案（TODO）:
-  * `payload_hash`（または `(dataspec, rec_id, filename, payload)` 等）でユニーク制約を作る
-  * ETL側でハッシュ計算してINSERTする
+* `raw.jv_raw` は `(dataspec, rec_id, payload_hash)` のUNIQUE制約（`init_db.sql` の `uq_jv_raw_dedup`）で重複排除する設計。
+* `scripts/load_to_db.py` は `payload_hash = sha256(payload)` を計算して INSERT するため、同一payloadの再投入は冪等になる。
+* 既存DBが古いDDLで作成されている場合は、制約の有無を確認してから投入すること。
 
 ### 7.3 raw.jv_ck_event（CK）
 

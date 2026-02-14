@@ -6,13 +6,16 @@ JRA-VANデータを用いた競馬予測モデル (LightGBM)
 
 ```bash
 uv sync
+
+# W&B を使う場合のみ追加
+uv sync --extra wandb
 ```
 
 ## 実行フロー
 
 ### 1. データベース構築
 ```bash
-bash setup_postgres.sh
+bash setup_postgres_multi.sh keiba_cp
 ```
 
 ### 2. データ取得・ロード
@@ -37,6 +40,9 @@ uv run python scripts/build_dataset.py
 ```bash
 # 通常モード (Train 70% / ES-Val 10% / Test 20%)
 uv run python scripts/train.py
+
+# W&B を使わない場合（依存未導入でも実行可能）
+uv run python scripts/train.py --no-wandb
 
 # 本番学習モード (Train 90% / ES-Val 10% / Testなし)
 # 未来の予測に使用するモデルを作成する場合
