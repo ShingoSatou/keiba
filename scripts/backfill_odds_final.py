@@ -123,9 +123,7 @@ def backfill_odds_final(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Backfill core.odds_final from raw.jv_raw O1"
-    )
+    parser = argparse.ArgumentParser(description="Backfill core.odds_final from raw.jv_raw O1")
     parser.add_argument(
         "--dataspec",
         type=str,

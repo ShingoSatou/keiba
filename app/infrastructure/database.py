@@ -17,8 +17,10 @@ from psycopg.rows import dict_row
 try:
     from dotenv import load_dotenv
 except ImportError:  # pragma: no cover
+
     def load_dotenv(*args, **kwargs):
         return False
+
 
 # .env を読み込んで DATABASE_URL / DB_* を利用可能にする
 load_dotenv()
