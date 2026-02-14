@@ -178,7 +178,8 @@ uv run python scripts/load_to_db.py --input "data/DIFF_*.jsonl"
 
 ### 6.8 core.event_change（WE/AV/JC/TC/CC）
 
-* 現状は `payload_raw` を JSONB に詰めるだけ（構造化はTODO）
+* 現状は `payload_parsed`（監査キー＋最小構造化）を JSONB として保存し、`raw` も同梱する（詳細は `docs/データ辞書・正規化仕様書.md`）
+* ただし **mart（T-5スナップ）への反映（scratch/変更フラグ生成）はTODO**
 
 ---
 
@@ -246,9 +247,11 @@ uv run python scripts/verify_parsers.py
 以下は「ETL仕様として確定していない/未整備」なため、実装修正が必要。
 
 * `core.runner` のスキーマとローダのINSERT列が不一致になり得る（スキーマ/ローダの統一が必要）
-* CK（SNPN/CK）のパーサとローダが不整合で、現状そのままでは投入できない
+* CK（SNPN/CK）の投入:
+  * パーサ/ローダ/DDLは揃っているが、**E2E検証待ち**（参照: `docs/実装ギャップチェックリスト.md`, `docs/DB構築ToDo.md`）
 * 時系列オッズ（0B41）の投入:
-  * `core.o1_*` はあるが、`process_file()` から `upsert_o1_timeseries()` が呼ばれていない
+  * `scripts/load_to_db.py` は `dataspec=="0B41"` の `O1` を `core.o1_*` に投入する実装を持つ
+  * TODO: **E2E検証**し、`O1`（確定オッズ）への誤ルーティングが無いことを確認する
 * DM/TM（MING）の正規化が簡易で、実質 `payload_raw` 保持に近い（horse_no/スコア等の抽出が必要）
 
 ---
@@ -259,4 +262,3 @@ uv run python scripts/verify_parsers.py
 * データ辞書・正規化: `docs/データ辞書・正規化仕様書.md`
 * DB設計: `docs/DB設計仕様書.md`
 * ワークフロー（運用手順）: `.agent/workflows/batch-download.md`
-
