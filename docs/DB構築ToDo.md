@@ -46,13 +46,11 @@ DB構築を完了し、信頼できる状態にするためのタスクリスト
 
 ### [Code] コード修正・整理
 
-- [ ] **JVRTOpen（0Bxx）の取得オーケストレーション整備** <!-- id: rt-tool-update -->
+- [x] **JVRTOpen（0Bxx）の取得オーケストレーション整備** <!-- id: rt-tool-update -->
     - `scripts/extract_rt_jvlink.py` は **racekey × dataspec** の単発取得。
-    - 0B41 は **学習・検証にも必須**（Model M/O）なので、**バックフィル用の racekey ループ**を用意する（参照: `docs/ダウンロードリスト.md`）。
-    - 0B11/0B16/0B13/0B17 は現時点では Realtime-only として扱い、当日運用で **確実に蓄積（JSONL→DB）**する仕組みを優先する。
-    - 具体案:
-      - backfill: 対象racekey一覧 → `0B41` を一括取得（途中再開/重複排除）
-      - ops: 当日レース一覧（racekey）を元に `0B41/0B11/0B16/0B13/0B17` を一括取得（再実行単位は racekey）
+    - ✅ `scripts/backfill_rt.py`: 0B41 バックフィル（racekey ループ、途中再開・重複排除対応）
+    - ✅ `scripts/ops_rt.py`: 当日運用一括取得（0B41/0B11/0B16/0B13/0B17）
+    - ✅ `scripts/rt_common.py`: 共通ユーティリティ（WSL→Win32 subprocess 連携）
 
 - [ ] **CK（SNPN）ロードのE2E検証** <!-- id: ck-e2e -->
     - `SNPN_*.jsonl` を投入して `raw.jv_ck_event` / `core.ck_runner_event` / `mart.feat_ck_win` が増えることを確認する。
