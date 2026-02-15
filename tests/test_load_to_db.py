@@ -267,3 +267,36 @@ def test_process_file_applies_rt_mining_delete_for_kbn0(tmp_path, monkeypatch):
     assert stats["rt_mining_delete"] == 1
     assert stats["mining"] == 0
     assert called["delete"] == 1
+
+
+def test_upsert_race_updates_stub_surface_and_distance():
+    class _CaptureDB:
+        def __init__(self):
+            self.sql = ""
+            self.params = {}
+
+        def execute(self, sql, params):
+            self.sql = sql
+            self.params = params
+
+    db = _CaptureDB()
+    race = SimpleNamespace(
+        race_id=202602030501,
+        race_date="2026-02-03",
+        track_code=5,
+        race_no=1,
+        surface=1,
+        distance_m=1600,
+        going=1,
+        weather=2,
+        class_code=0,
+        field_size=16,
+        start_time=None,
+    )
+
+    load_to_db.upsert_race(db, race)
+
+    assert "surface = CASE" in db.sql
+    assert "distance_m = CASE" in db.sql
+    assert db.params["surface"] == 1
+    assert db.params["distance_m"] == 1600

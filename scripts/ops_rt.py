@@ -1,7 +1,7 @@
 """
 当日運用 リアルタイムデータ一括取得スクリプト（JVRTOpen 経由）
 
-当日レース一覧を元に 0B41/0B11/0B16/0B13/0B17 を一括取得する。
+当日レース一覧を元に 0B41/0B14/0B11/0B13/0B17 を一括取得する。
 WSL 上で実行し、JVRTOpen 呼び出しは subprocess で Windows 32bit Python に委譲。
 
 使用方法:
@@ -10,7 +10,7 @@ WSL 上で実行し、JVRTOpen 呼び出しは subprocess で Windows 32bit Pyth
 
     # 特定 dataspec のみ
     uv run python scripts/ops_rt.py \\
-        --race-date 20260214 --dataspecs 0B41,0B11
+        --race-date 20260214 --dataspecs 0B41,0B14
 
     # DRY-RUN
     uv run python scripts/ops_rt.py --race-date 20260214 --dry-run
@@ -41,6 +41,14 @@ from scripts.rt_common import (  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+DATE_KEY_DATASPECS = {"0B11", "0B13", "0B14", "0B17"}
+
+
+def _build_request_keys(dataspec: str, race_date: str, racekeys: list[str]) -> list[str]:
+    if dataspec.upper() in DATE_KEY_DATASPECS:
+        return [race_date]
+    return racekeys
 
 
 def run_ops(
@@ -79,16 +87,21 @@ def run_ops(
         logger.info("    先に RACE データをロードしてください。")
         return stats
 
-    stats["total"] = len(racekeys) * len(dataspecs)
-    logger.info(
-        "  対象レース: %d 件 × %d dataspec = %d 取得", len(racekeys), len(dataspecs), stats["total"]
-    )
+    request_keys_by_dataspec = {
+        dataspec: _build_request_keys(dataspec, race_date, racekeys) for dataspec in dataspecs
+    }
+    stats["total"] = sum(len(keys) for keys in request_keys_by_dataspec.values())
+    logger.info("  対象レース: %d 件", len(racekeys))
+    logger.info("  取得要求  : %d 件", stats["total"])
 
     if dry_run:
         logger.info("[DRY-RUN] 取得対象:")
         for ds in dataspecs:
+            request_keys = request_keys_by_dataspec[ds]
+            key_unit = "開催日単位" if ds.upper() in DATE_KEY_DATASPECS else "レース単位"
             logger.info("  dataspec=%s:", ds)
-            for key in racekeys:
+            logger.info("    key unit: %s (%d件)", key_unit, len(request_keys))
+            for key in request_keys:
                 logger.info("    %s", key)
         return stats
 
@@ -97,37 +110,52 @@ def run_ops(
 
     # 3. racekey × dataspec のループ
     for ds_idx, dataspec in enumerate(dataspecs):
-        logger.info("📡 [%d/%d] dataspec=%s", ds_idx + 1, len(dataspecs), dataspec)
+        request_keys = request_keys_by_dataspec[dataspec]
+        key_unit = "date" if dataspec.upper() in DATE_KEY_DATASPECS else "race"
+        logger.info(
+            "📡 [%d/%d] dataspec=%s key_unit=%s keys=%d",
+            ds_idx + 1,
+            len(dataspecs),
+            dataspec,
+            key_unit,
+            len(request_keys),
+        )
 
-        for key_idx, racekey in enumerate(racekeys):
+        for key_idx, request_key in enumerate(request_keys):
             # 既存ファイルチェック
             if not force:
-                existing = find_existing_output(output_dir, dataspec, racekey)
+                existing = find_existing_output(output_dir, dataspec, request_key)
                 if existing:
                     logger.debug("  スキップ (既存): %s", existing.name)
                     stats["skip"] += 1
                     continue
 
             # subprocess で取得
-            ok, msg = call_extract_rt(python32, dataspec, racekey, output_dir, dry_run=False)
+            ok, msg = call_extract_rt(
+                python32,
+                dataspec,
+                request_key,
+                output_dir,
+                dry_run=False,
+            )
 
             if ok:
                 stats["success"] += 1
                 logger.info(
                     "  ✅ [%d/%d] %s × %s",
                     key_idx + 1,
-                    len(racekeys),
+                    len(request_keys),
                     dataspec,
-                    racekey,
+                    request_key,
                 )
             else:
                 stats["error"] += 1
                 logger.warning(
                     "  ❌ [%d/%d] %s × %s: %s",
                     key_idx + 1,
-                    len(racekeys),
+                    len(request_keys),
                     dataspec,
-                    racekey,
+                    request_key,
                     msg,
                 )
 
@@ -185,6 +213,11 @@ def main():
         action="store_true",
         help="DRY-RUN: 取得対象の確認のみ",
     )
+    parser.add_argument(
+        "--fail-on-error",
+        action="store_true",
+        help="取得エラーが1件でもあれば非0終了する",
+    )
     args = parser.parse_args()
 
     # 引数の解決
@@ -220,6 +253,11 @@ def main():
     print(f"  スキップ : {stats['skip']:,} 件")
     print(f"  エラー   : {stats['error']:,} 件")
     print("=" * 60)
+
+    if args.fail_on_error and stats["error"] > 0:
+        print("")
+        print("❌ fail-on-error により終了します（取得エラーあり）")
+        sys.exit(1)
 
     if stats["success"] > 0:
         print("")

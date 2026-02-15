@@ -71,7 +71,7 @@ def get_jvlink():
     return jv
 
 
-def jv_rt_open_with_logging(jv, dataspec: str, racekey: str):
+def jv_rt_open_with_logging(jv, dataspec: str, key: str):
     """
     JVRTOpenを詳細ログ付きで実行
 
@@ -80,11 +80,11 @@ def jv_rt_open_with_logging(jv, dataspec: str, racekey: str):
     """
     print("\n📡 JVRTOpen 呼び出し:")
     print(f"   dataspec = {dataspec}")
-    print(f"   racekey  = {racekey}")
+    print(f"   key      = {key}")
 
     # JVRTOpen(dataspec, key) -> rc
     try:
-        ret = jv.JVRTOpen(dataspec, racekey)
+        ret = jv.JVRTOpen(dataspec, key)
     except Exception as e:
         print(f"\n❌ JVRTOpen 例外発生: {e}")
         traceback.print_exc()
@@ -102,7 +102,7 @@ def jv_rt_open_with_logging(jv, dataspec: str, racekey: str):
     # 判定と説明
     if rc_open < 0:
         error_messages = {
-            -1: "dataspec が不正",
+            -1: "該当データ無し",
             -2: "key が不正",
             -100: "JVInit が実行されていない",
             -101: "前回のダウンロードが異常終了",
@@ -225,11 +225,16 @@ def main():
         "--dataspec",
         required=True,
         help="データ種別 (0B41=時系列オッズ単複枠, 0B42=時系列オッズ馬連等, "
-        "0B11=馬体重, 0B16=当日変更)",
+        "0B11=馬体重, 0B14=開催情報(一括), 0B16=開催情報(指定, event key前提))",
+    )
+    parser.add_argument(
+        "--key",
+        default="",
+        help="要求キー (YYYYMMDDJJKKHHRR / YYYYMMDDJJRR / YYYYMMDD / イベントkey)",
     )
     parser.add_argument(
         "--racekey",
-        required=True,
+        default="",
         help="レースキー (YYYYMMDDJJKKHHRR形式)",
     )
     parser.add_argument(
@@ -258,6 +263,10 @@ def main():
 
     ensure_32bit()
 
+    key = args.key or args.racekey
+    if not key:
+        parser.error("--key または --racekey のいずれかを指定してください")
+
     # 出力ディレクトリ作成
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -265,7 +274,7 @@ def main():
     print("JV-Link リアルタイムデータ抽出 (JVRTOpen)")
     print("=" * 60)
     print(f"データ種別: {args.dataspec}")
-    print(f"レースキー: {args.racekey}")
+    print(f"要求キー  : {key}")
     if args.dry_run:
         print("モード    : DRY-RUN (JVRTOpenのみ)")
     print("=" * 60)
@@ -274,7 +283,7 @@ def main():
     jv = get_jvlink()
 
     # JVRTOpen
-    rc_open = jv_rt_open_with_logging(jv, args.dataspec, args.racekey)
+    rc_open = jv_rt_open_with_logging(jv, args.dataspec, key)
 
     # エラーチェック (負の値のみがエラー、0は成功)
     if rc_open < 0:
@@ -315,7 +324,7 @@ def main():
 
     # 出力ファイル名
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = args.output_dir / f"{args.dataspec}_{args.racekey}_{timestamp}.jsonl"
+    output_file = args.output_dir / f"{args.dataspec}_{key}_{timestamp}.jsonl"
     print(f"\n📁 出力先: {output_file}")
 
     # 抽出＆保存

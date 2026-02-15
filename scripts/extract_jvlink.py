@@ -134,7 +134,7 @@ def jv_open_with_logging(jv, dataspec: str, from_date: str, option: int):
     # 判定と説明
     if rc_open < 0:
         error_messages = {
-            -1: "dataspec が不正",
+            -1: "該当データ無し",
             -2: "fromtime が不正",
             -3: "option が不正",
             -100: "JVInit が実行されていない",

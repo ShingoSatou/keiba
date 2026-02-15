@@ -4,6 +4,7 @@ RT オーケストレーション (backfill / ops) のテスト
 DB接続を必要としないロジック部分のユニットテスト。
 """
 
+from scripts.ops_rt import _build_request_keys
 from scripts.rt_common import (
     OPS_DEFAULT_DATASPECS,
     build_output_path,
@@ -145,13 +146,27 @@ class TestOpsDefaultDataspecs:
     def test_contains_all_required(self):
         # 必須 dataspecs が含まれていること
         assert "0B41" in OPS_DEFAULT_DATASPECS
+        assert "0B14" in OPS_DEFAULT_DATASPECS
         assert "0B11" in OPS_DEFAULT_DATASPECS
-        assert "0B16" in OPS_DEFAULT_DATASPECS
         assert "0B13" in OPS_DEFAULT_DATASPECS
         assert "0B17" in OPS_DEFAULT_DATASPECS
 
     def test_count(self):
         assert len(OPS_DEFAULT_DATASPECS) == 5
+
+
+class TestOpsRequestKeys:
+    def test_date_key_dataspec_uses_race_date(self):
+        racekeys = ["202602080501", "202602080502"]
+        assert _build_request_keys("0B11", "20260208", racekeys) == ["20260208"]
+        assert _build_request_keys("0B13", "20260208", racekeys) == ["20260208"]
+        assert _build_request_keys("0B14", "20260208", racekeys) == ["20260208"]
+        assert _build_request_keys("0B17", "20260208", racekeys) == ["20260208"]
+
+    def test_race_key_dataspec_keeps_racekeys(self):
+        racekeys = ["202602080501", "202602080502"]
+        assert _build_request_keys("0B41", "20260208", racekeys) == racekeys
+        assert _build_request_keys("0B99", "20260208", racekeys) == racekeys
 
 
 class TestToWindowsPath:
