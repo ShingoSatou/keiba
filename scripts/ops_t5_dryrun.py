@@ -136,9 +136,7 @@ def main() -> None:
     parser.add_argument("--race-date", required=True, help="対象日 (YYYYMMDD)")
     parser.add_argument("--feature-set", default="realtime", help="snapshot feature_set")
     parser.add_argument("--input-dir", default="data", help="load_to_db 対象ディレクトリ")
-    parser.add_argument(
-        "--output-dir", default="", help="出力先 (未指定時は data/ops/<date>)"
-    )
+    parser.add_argument("--output-dir", default="", help="出力先 (未指定時は data/ops/<date>)")
     parser.add_argument("--fetch-rt", action="store_true", help="ops_rt.py を先に実行する")
     parser.add_argument(
         "--odds-stale-sec", type=int, default=900, help="オッズ古さ判定しきい値(秒)"
@@ -150,9 +148,7 @@ def main() -> None:
     race_date_iso = f"{race_date[:4]}-{race_date[4:6]}-{race_date[6:8]}"
 
     output_dir = (
-        Path(args.output_dir)
-        if args.output_dir
-        else (PROJECT_ROOT / "data" / "ops" / race_date)
+        Path(args.output_dir) if args.output_dir else (PROJECT_ROOT / "data" / "ops" / race_date)
     )
 
     if args.fetch_rt:
