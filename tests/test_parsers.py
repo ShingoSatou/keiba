@@ -464,6 +464,8 @@ class TestMiningParsers:
 
         assert len(rows) == 2
         assert rows[0].race_id == 202602030501
+        assert rows[0].data_create_ymd == "20260203"
+        assert rows[0].data_create_hm == "0000"
         assert rows[0].horse_no == 1
         assert rows[0].dm_time_x10 == 900
 
@@ -499,6 +501,8 @@ class TestMiningParsers:
 
         assert len(rows) == 2
         assert rows[0].race_id == 202602030501
+        assert rows[0].data_create_ymd == "20260203"
+        assert rows[0].data_create_hm == "0000"
         assert rows[0].horse_no == 1
         assert rows[0].tm_score == 853
 

@@ -28,9 +28,9 @@
 | 競走馬除外 | JG | Backfillable | ✅ | ✅ | ✅ | 実装完了（馬名更新のみ） |
 | 馬体重速報 | WH | Realtime-only | ✅ | ✅ | ✅ | 実装完了（運用開始以降に蓄積） |
 | 調教（坂路/ウッド） | HC/WC | Backfillable | ✅ | ✅ | ✅ | 実装完了 |
-| マイニング | DM/TM | 両方 | ✅ | ✅ | ✅ | **学習= MING（Backfillable）**はOK。**運用= 0B13/0B17（Realtime-only）**は採用キー/履歴の扱いを別途設計 |
-| 出走別着度数（CK） | CK | Backfillable | ✅ | ✅ | ⚠️ | 実装済・**E2E検証待ち**（`raw.jv_ck_event`/`core.ck_runner_event`/`mart.feat_ck_win`） |
-| 当日変更情報 | WE/AV等 | Realtime-only | ✅ | ✅ | ✅ | **監査キー+最小構造化（payload_parsed）まで投入**。mart反映（取消/変更フラグ）は別ToDo |
+| マイニング | DM/TM | 両方 | ✅ | ✅ | ✅ | **学習= MING（Backfillable）**は `core.mining_*`（上書き）。**運用= 0B13/0B17（Realtime-only）**は `core.rt_mining_*` に履歴保持（`migrations/20260215_add_rt_mining_dm_tm.sql`）し、T-5採用キーを `mart.t5_runner_snapshot` に保存 |
+| 出走別着度数（CK） | CK | Backfillable | ✅ | ✅ | ✅ | E2E投入確認済（`raw.jv_ck_event`/`core.ck_runner_event`/`mart.feat_ck_win`） |
+| 当日変更情報 | WE/AV等 | Realtime-only | ✅ | ✅ | ✅ | **監査キー+最小構造化（payload_parsed）まで投入**。T-5スナップへの反映はTC/AV/JCは実装済、WE/CCは別ToDo |
 | 速報オッズ | O1(0B15) | Realtime-only | ✅ | ✅ | ⚠️ | **0B41以外は上書き保存**（時系列保持なし）。現状はMVP外 |
 | 速報票数 | H1/H6(0B12) | Realtime-only | ❌ | ❌ | ❌ | **完全未実装**（必要なら追加） |
 
@@ -52,16 +52,19 @@ DB構築を完了し、信頼できる状態にするためのタスクリスト
     - ✅ `scripts/ops_rt.py`: 当日運用一括取得（0B41/0B11/0B16/0B13/0B17）
     - ✅ `scripts/rt_common.py`: 共通ユーティリティ（WSL→Win32 subprocess 連携）
 
-- [ ] **CK（SNPN）ロードのE2E検証** <!-- id: ck-e2e -->
+- [x] **CK（SNPN）ロードのE2E検証** <!-- id: ck-e2e -->
     - `SNPN_*.jsonl` を投入して `raw.jv_ck_event` / `core.ck_runner_event` / `mart.feat_ck_win` が増えることを確認する。
     - 同一ファイルの再投入が冪等（UPSERT/UNIQUEで破綻しない）であることを確認する。
+
+- [x] **T-5 as-of スナップのドライラン（取得→DB→特徴量→スナップ→出力）** <!-- id: ops-t5-dryrun -->
+    - `scripts/ops_t5_dryrun.py --race-date YYYYMMDD [--fetch-rt]` を追加（CSV/JSON/HTML出力）
 
 ### [Doc] ドキュメント更新
 
 - [x] **仕様書のステータス更新（反映済）** <!-- id: doc-update -->
     - `0B41` はバックフィル可能（2003年〜）として、学習・検証（Model M/O）に使える前提に整理した。
     - `0B11/0B16/0B13/0B17` は現時点では Realtime-only として扱う（必要なら別途方針を追加）。
-    - `event_change` は「監査キー+最小構造化（payload_parsed）」まで投入する前提に更新した（mart反映はTODO）。
+    - `event_change` は「監査キー+最小構造化（payload_parsed）」まで投入し、T-5スナップ反映はTC/AV/JCは対応済（WE/CCはTODO）に更新した。
 
 ### [Test] 検証
 
@@ -75,9 +78,9 @@ DB構築を完了し、信頼できる状態にするためのタスクリスト
 
 - [ ] **当日変更（0B16）の mart 反映（T-5スナップ）**
     - `core.event_change` から as-of（<=T-5）で
-      * 取消（AV）→ 推論対象外（または `scratch_flag`）
-      * 騎手変更（JC）→ jockey置換＋フラグ
-      * 発走時刻変更（TC）→ post_time更新＋asof再計算
+      * 取消（AV）→ 推論対象外（または `scratch_flag`） ✅（`scripts/build_t5_snapshot.py`）
+      * 騎手変更（JC）→ jockey置換＋フラグ ✅（`scripts/build_t5_snapshot.py`）
+      * 発走時刻変更（TC）→ post_time更新＋asof再計算 ✅（`scripts/build_t5_snapshot.py`）
       * コース変更（CC）→ 条件特徴量更新＋フラグ
       を反映する。
 - [ ] **event_change の追加構造化（必要なら）**
@@ -86,5 +89,5 @@ DB構築を完了し、信頼できる状態にするためのタスクリスト
 ## 3. 次のアクション
 
 1. Backfillable（JVOpen + 0B41バックフィル）で 2016〜現在の学習DBを構築できることを先に検証する。
-2. CK（SNPN）のE2E検証を通し、`mart.feat_ck_win` まで増えることを確認する。
-3. Realtime-only（0B11/0B16/0B13/0B17）は「運用開始以降に蓄積する」前提で、当日取得のオーケストレーションを整備する。
+2. Realtime-only（0B11/0B16/0B13/0B17）を投入し、`scripts/ops_t5_dryrun.py --race-date YYYYMMDD` で採用キー/スナップ出力までE2E確認する。
+3. `mart.t5_runner_snapshot` 入力の当日推論（買い目表+監査ログ出力）へ接続する。
