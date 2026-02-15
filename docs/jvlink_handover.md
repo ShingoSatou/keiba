@@ -139,7 +139,7 @@ uv run python scripts/backfill_rt.py \
 
 ### 当日運用 RT一括取得 (WSLから実行)
 ```bash
-# 当日の 0B41/0B11/0B16/0B13/0B17 を一括取得
+# 当日の 0B41/0B14/0B11/0B13/0B17 を一括取得
 uv run python scripts/ops_rt.py --race-date 20260214
 ```
 
