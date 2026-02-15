@@ -86,8 +86,7 @@ def _discover_rt_files(
     dataspecs: list[str],
 ) -> dict[str, list[Path]]:
     return {
-        dataspec: sorted(input_dir.glob(f"{dataspec}_{race_date}*.jsonl"))
-        for dataspec in dataspecs
+        dataspec: sorted(input_dir.glob(f"{dataspec}_{race_date}*.jsonl")) for dataspec in dataspecs
     }
 
 
