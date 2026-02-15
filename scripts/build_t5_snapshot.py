@@ -54,6 +54,7 @@ def build_snapshot(
         FROM core.race
         WHERE race_date BETWEEN %(from_date)s AND %(to_date)s
           AND track_code BETWEEN 1 AND 10
+          AND race_no BETWEEN 1 AND 12
           AND start_time IS NULL
         """,
         {"from_date": from_date, "to_date": to_date},
@@ -64,6 +65,7 @@ def build_snapshot(
         FROM core.race
         WHERE race_date BETWEEN %(from_date)s AND %(to_date)s
           AND track_code BETWEEN 1 AND 10
+          AND race_no BETWEEN 1 AND 12
         """,
         {"from_date": from_date, "to_date": to_date},
     )
@@ -91,6 +93,7 @@ def build_snapshot(
         ) picked ON TRUE
         WHERE r.race_date BETWEEN %(from_date)s AND %(to_date)s
           AND r.track_code BETWEEN 1 AND 10
+          AND r.race_no BETWEEN 1 AND 12
     ),
     target_races AS (
         SELECT
@@ -113,6 +116,7 @@ def build_snapshot(
         LEFT JOIN tc_latest tc ON tc.race_id = r.race_id
         WHERE r.race_date BETWEEN %(from_date)s AND %(to_date)s
           AND r.track_code BETWEEN 1 AND 10
+          AND r.race_no BETWEEN 1 AND 12
     ),
     runner_candidates AS (
         SELECT
@@ -322,6 +326,57 @@ def build_snapshot(
             LIMIT 1
         ) picked ON TRUE
     ),
+    we_selected AS (
+        SELECT
+            rb.race_date,
+            rb.track_code,
+            rb.asof_ts,
+            picked.id AS we_event_id,
+            picked.announce_mmddhhmi AS we_announce_mmddhhmi,
+            picked.weather_now,
+            picked.going_turf_now,
+            picked.going_dirt_now
+        FROM (SELECT DISTINCT race_date, track_code, asof_ts FROM runner_base) rb
+        LEFT JOIN LATERAL (
+            SELECT
+                ec.id,
+                ec.announce_mmddhhmi,
+                ec.payload_parsed->>'weather_now' AS weather_now,
+                ec.payload_parsed->>'going_turf_now' AS going_turf_now,
+                ec.payload_parsed->>'going_dirt_now' AS going_dirt_now
+            FROM core.event_change ec
+            WHERE ec.record_type = 'WE'
+              AND ec.race_id = (
+                  to_char(rb.race_date, 'YYYYMMDD')::BIGINT * 10000 + rb.track_code * 100
+              )
+              AND COALESCE(ec.announce_mmddhhmi, '00000000') <= to_char(rb.asof_ts, 'MMDDHH24MI')
+            ORDER BY ec.announce_mmddhhmi DESC, ec.id DESC
+            LIMIT 1
+        ) picked ON TRUE
+    ),
+    cc_selected AS (
+        SELECT
+            rb.race_id,
+            rb.asof_ts,
+            picked.id AS cc_event_id,
+            picked.announce_mmddhhmi AS cc_announce_mmddhhmi,
+            picked.distance_m_after,
+            picked.track_type_after
+        FROM (SELECT DISTINCT race_id, asof_ts FROM runner_base) rb
+        LEFT JOIN LATERAL (
+            SELECT
+                ec.id,
+                ec.announce_mmddhhmi,
+                ec.payload_parsed->>'distance_m_after' AS distance_m_after,
+                ec.payload_parsed->>'track_type_after' AS track_type_after
+            FROM core.event_change ec
+            WHERE ec.race_id = rb.race_id
+              AND ec.record_type = 'CC'
+              AND COALESCE(ec.announce_mmddhhmi, '00000000') <= to_char(rb.asof_ts, 'MMDDHH24MI')
+            ORDER BY ec.announce_mmddhhmi DESC, ec.id DESC
+            LIMIT 1
+        ) picked ON TRUE
+    ),
     joined AS (
         SELECT
             rb.race_id,
@@ -384,7 +439,16 @@ def build_snapshot(
                     'tc_announce_mmddhhmi', rb.tc_announce_mmddhhmi,
                     'jc_event_id', jcs.jc_event_id,
                     'jc_announce_mmddhhmi', jcs.jc_announce_mmddhhmi,
-                    'av_horse_nos', avh.av_horse_nos
+                    'av_horse_nos', avh.av_horse_nos,
+                    'we_event_id', wes.we_event_id,
+                    'we_announce_mmddhhmi', wes.we_announce_mmddhhmi,
+                    'we_weather_now', wes.weather_now,
+                    'we_going_turf_now', wes.going_turf_now,
+                    'we_going_dirt_now', wes.going_dirt_now,
+                    'cc_event_id', ccs.cc_event_id,
+                    'cc_announce_mmddhhmi', ccs.cc_announce_mmddhhmi,
+                    'cc_distance_m_after', ccs.distance_m_after,
+                    'cc_track_type_after', ccs.track_type_after
                 )
             ) AS event_change_keys,
             dmhs.data_kbn AS dm_kbn,
@@ -427,6 +491,13 @@ def build_snapshot(
         LEFT JOIN tm_header_selected tmhs
             ON tmhs.race_id = rb.race_id
            AND tmhs.asof_ts = rb.asof_ts
+        LEFT JOIN we_selected wes
+            ON wes.race_date = rb.race_date
+           AND wes.track_code = rb.track_code
+           AND wes.asof_ts = rb.asof_ts
+        LEFT JOIN cc_selected ccs
+            ON ccs.race_id = rb.race_id
+           AND ccs.asof_ts = rb.asof_ts
         LEFT JOIN core.odds_final final
             ON final.race_id = rb.race_id
            AND final.horse_id = rb.horse_id

@@ -7,6 +7,7 @@ T-5 as-of 運用ドライラン用オーケストレーション。
 3) 特徴量生成 (対象日)
 4) T-5 スナップ生成
 5) スナップを CSV / JSON / HTML に出力
+6) T-5スナップ入力の推論を実行して結果/監査を出力
 """
 
 from __future__ import annotations
@@ -141,6 +142,9 @@ def main() -> None:
     parser.add_argument(
         "--odds-stale-sec", type=int, default=900, help="オッズ古さ判定しきい値(秒)"
     )
+    parser.add_argument("--slippage", type=float, default=0.15, help="スリッページ率")
+    parser.add_argument("--min-prob", type=float, default=0.03, help="最低確率閾値")
+    parser.add_argument("--bet-amount", type=int, default=500, help="賭け金")
     parser.add_argument("--dry-run", action="store_true", help="コマンド表示のみ")
     args = parser.parse_args()
 
@@ -188,6 +192,51 @@ def main() -> None:
         feature_set=args.feature_set,
         output_dir=output_dir,
         odds_stale_sec=args.odds_stale_sec,
+    )
+
+    _run_command(
+        [
+            "uv",
+            "run",
+            "python",
+            "scripts/predict_t5.py",
+            "--race-date",
+            race_date_iso,
+            "--feature-set",
+            args.feature_set,
+            "--output-dir",
+            str(output_dir),
+            "--odds-stale-sec",
+            str(args.odds_stale_sec),
+            "--slippage",
+            str(args.slippage),
+            "--min-prob",
+            str(args.min_prob),
+            "--bet-amount",
+            str(args.bet_amount),
+        ],
+        dry_run=False,
+    )
+
+    run_meta_path = output_dir / "run_meta.json"
+    if run_meta_path.exists():
+        merged_meta = json.loads(run_meta_path.read_text(encoding="utf-8"))
+    else:
+        merged_meta = meta
+    merged_meta["prediction"] = {
+        "slippage": args.slippage,
+        "min_prob": args.min_prob,
+        "bet_amount": args.bet_amount,
+        "files": {
+            "csv": str(output_dir / "t5_predictions.csv"),
+            "json": str(output_dir / "t5_predictions.json"),
+            "html": str(output_dir / "t5_predictions.html"),
+            "audit": str(output_dir / "t5_audit.json"),
+        },
+    }
+    run_meta_path.write_text(
+        json.dumps(merged_meta, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
     logger.info("done: %s", json.dumps(meta, ensure_ascii=False))
 
