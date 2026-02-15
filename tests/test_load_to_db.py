@@ -122,3 +122,64 @@ def test_process_file_counts_missing_runner_by_rowcount(tmp_path, monkeypatch):
     assert stats["odds"] == 0
     assert stats["odds_upserted"] == 0
     assert stats["odds_missing_runner"] == 1
+
+
+def test_process_file_skips_raw_jv_raw_for_snpn(tmp_path, monkeypatch):
+    file_path = tmp_path / "SNPN_test.jsonl"
+    _write_jsonl(
+        file_path,
+        [
+            {"rec_id": "CK", "payload": "ck_payload"},
+        ],
+    )
+
+    raw_calls: list[int] = []
+
+    monkeypatch.setattr(load_to_db, "prepare_master_data_cache", lambda db: (set(), set()))
+    monkeypatch.setattr(
+        load_to_db,
+        "insert_raw_records_batch",
+        lambda db, dataspec, batch: raw_calls.append(len(batch)),
+    )
+    monkeypatch.setattr(load_to_db.CKRecord, "parse", lambda payload: SimpleNamespace())
+    monkeypatch.setattr(
+        load_to_db,
+        "_build_ck_payloads",
+        lambda dataspec, ck: ({"x": 1}, {"x": 2}, {"x": 3}),
+    )
+    monkeypatch.setattr(
+        load_to_db,
+        "insert_ck_records_batch",
+        lambda db, raw_payloads, core_payloads, feat_payloads: len(raw_payloads),
+    )
+
+    stats = load_to_db.process_file(_DummyDB(), file_path)
+
+    assert raw_calls == []
+    assert stats["raw"] == 0
+    assert stats["ck"] == 1
+    assert stats["ck_skipped_make_date"] == 0
+
+
+def test_process_file_counts_ck_skipped_make_date(tmp_path, monkeypatch):
+    file_path = tmp_path / "SNPN_test.jsonl"
+    _write_jsonl(
+        file_path,
+        [
+            {"rec_id": "CK", "payload": "ck_payload"},
+        ],
+    )
+
+    monkeypatch.setattr(load_to_db, "prepare_master_data_cache", lambda db: (set(), set()))
+    monkeypatch.setattr(load_to_db.CKRecord, "parse", lambda payload: SimpleNamespace())
+    monkeypatch.setattr(load_to_db, "_build_ck_payloads", lambda dataspec, ck: None)
+    monkeypatch.setattr(
+        load_to_db,
+        "insert_ck_records_batch",
+        lambda db, raw_payloads, core_payloads, feat_payloads: len(raw_payloads),
+    )
+
+    stats = load_to_db.process_file(_DummyDB(), file_path)
+
+    assert stats["ck"] == 0
+    assert stats["ck_skipped_make_date"] == 1

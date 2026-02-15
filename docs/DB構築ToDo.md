@@ -41,8 +41,8 @@ DB構築を完了し、信頼できる状態にするためのタスクリスト
 ### [DB] DDL / Migration（既存DBをアップデートする場合）
 
 - [ ] **raw.jv_raw の冪等化（payload_hash）を適用** <!-- id: raw-dedup -->
-    - 既に `init_db.sql` では `payload_hash` + UNIQUE が前提だが、既存DBを使う場合は移行が必要。
-    - 参照: `docs/migrations/20260213_raw_dedup.sql`
+    - 既に `migrations/0001_init_db.sql` では `payload_hash` + UNIQUE が前提だが、既存DBを使う場合は移行が必要。
+    - 参照: `migrations/20260213_raw_dedup.sql`
 
 ### [Code] コード修正・整理
 

@@ -135,6 +135,55 @@ CREATE INDEX IF NOT EXISTS idx_prediction_log_date ON mart.prediction_log(predic
 
 COMMENT ON TABLE mart.prediction_log IS '予測ログ。バックテスト・運用評価に使用。';
 
+-- -----------------------------------------------------------------------------
+-- T-5 as-of スナップショット（1行=1頭）
+-- 学習/運用共通の当日入力再現用
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS mart.t5_runner_snapshot (
+    race_id BIGINT NOT NULL,
+    race_date DATE NOT NULL,
+    track_code SMALLINT NOT NULL,
+    race_no SMALLINT NOT NULL,
+    horse_id TEXT NOT NULL,
+    horse_no SMALLINT NOT NULL,
+    gate SMALLINT,
+    jockey_id BIGINT,
+    trainer_id BIGINT,
+    carried_weight NUMERIC(4,1),
+    body_weight_asof SMALLINT,
+    body_weight_diff_asof SMALLINT,
+    bw_source TEXT NOT NULL,                      -- 'WH' or 'SE'
+    post_time TIME NOT NULL,                      -- 発走時刻(T)
+    asof_ts TIMESTAMP NOT NULL,                   -- T-5
+    feature_set TEXT NOT NULL,                    -- backfillable / realtime など
+    o1_data_kbn SMALLINT,
+    o1_announce_mmddhhmi CHAR(8),
+    odds_win_t5 NUMERIC(8,2),
+    pop_win_t5 SMALLINT,
+    odds_rank_t5 SMALLINT,
+    win_pool_total_100yen_t5 BIGINT,
+    odds_snapshot_age_sec INT,
+    odds_missing_flag BOOLEAN NOT NULL DEFAULT FALSE,
+    odds_win_final NUMERIC(8,2),                  -- 後日検証/学習用
+    pop_win_final SMALLINT,
+    wh_announce_mmddhhmi CHAR(8),                 -- WHが入る運用フェーズ用
+    event_change_keys JSONB,                      -- 0B16採用キー（将来拡張）
+    dm_kbn SMALLINT,                              -- 速報DM採用区分（将来拡張）
+    dm_create_time CHAR(12),                      -- 速報DM作成時刻（将来拡張）
+    tm_kbn SMALLINT,                              -- 速報TM採用区分（将来拡張）
+    tm_create_time CHAR(12),                      -- 速報TM作成時刻（将来拡張）
+    code_version TEXT,                            -- 生成時のgit hash等
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (race_id, horse_no, asof_ts)
+);
+
+CREATE INDEX IF NOT EXISTS idx_t5_snapshot_race_date ON mart.t5_runner_snapshot(race_date, race_id);
+CREATE INDEX IF NOT EXISTS idx_t5_snapshot_asof ON mart.t5_runner_snapshot(asof_ts);
+CREATE INDEX IF NOT EXISTS idx_t5_snapshot_feature_set ON mart.t5_runner_snapshot(feature_set);
+
+COMMENT ON TABLE mart.t5_runner_snapshot IS 'T-5 as-of スナップショット（1行=1頭）。';
+
 -- =============================================================================
 -- 完了メッセージ
 -- =============================================================================
