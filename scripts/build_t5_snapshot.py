@@ -74,27 +74,56 @@ def build_snapshot(
     )
 
     sql = """
-    WITH target_races AS (
+    WITH tc_latest AS (
+        SELECT
+            r.race_id,
+            picked.id AS tc_event_id,
+            picked.announce_mmddhhmi AS tc_announce_mmddhhmi,
+            picked.payload_parsed->>'post_time_after' AS post_time_after
+        FROM core.race r
+        LEFT JOIN LATERAL (
+            SELECT id, announce_mmddhhmi, payload_parsed
+            FROM core.event_change ec
+            WHERE ec.race_id = r.race_id
+              AND ec.record_type = 'TC'
+            ORDER BY ec.announce_mmddhhmi DESC, ec.id DESC
+            LIMIT 1
+        ) picked ON TRUE
+        WHERE r.race_date BETWEEN %(from_date)s AND %(to_date)s
+          AND r.track_code BETWEEN 1 AND 10
+    ),
+    target_races AS (
         SELECT
             r.race_id,
             r.race_date,
             r.track_code,
             r.race_no,
-            r.start_time AS post_time,
-            (r.race_date::timestamp + r.start_time - INTERVAL '5 minutes') AS asof_ts
+            CASE
+                WHEN tc.post_time_after ~ '^[0-9]{4}$' THEN
+                    make_time(
+                        substring(tc.post_time_after, 1, 2)::INT,
+                        substring(tc.post_time_after, 3, 2)::INT,
+                        0
+                    )
+                ELSE r.start_time
+            END AS post_time,
+            tc.tc_event_id,
+            tc.tc_announce_mmddhhmi
         FROM core.race r
+        LEFT JOIN tc_latest tc ON tc.race_id = r.race_id
         WHERE r.race_date BETWEEN %(from_date)s AND %(to_date)s
           AND r.track_code BETWEEN 1 AND 10
-          AND r.start_time IS NOT NULL
     ),
-    runner_base AS (
+    runner_candidates AS (
         SELECT
             tr.race_id,
             tr.race_date,
             tr.track_code,
             tr.race_no,
             tr.post_time,
-            tr.asof_ts,
+            (tr.race_date::timestamp + tr.post_time - INTERVAL '5 minutes') AS asof_ts,
+            tr.tc_event_id,
+            tr.tc_announce_mmddhhmi,
             run.horse_id,
             run.horse_no,
             run.gate,
@@ -102,10 +131,99 @@ def build_snapshot(
             run.trainer_id,
             run.carried_weight,
             run.body_weight AS se_body_weight,
-            run.body_weight_diff AS se_body_weight_diff
+            run.body_weight_diff AS se_body_weight_diff,
+            run.scratch_flag
         FROM target_races tr
         JOIN core.runner run ON run.race_id = tr.race_id
-        WHERE run.scratch_flag = FALSE
+        WHERE tr.post_time IS NOT NULL
+    ),
+    av_selected AS (
+        SELECT
+            rc.race_id,
+            rc.asof_ts,
+            rc.horse_no,
+            picked.id AS av_event_id
+        FROM runner_candidates rc
+        LEFT JOIN LATERAL (
+            SELECT ec.id
+            FROM core.event_change ec
+            WHERE ec.race_id = rc.race_id
+              AND ec.record_type = 'AV'
+              AND COALESCE(ec.announce_mmddhhmi, '00000000') <= to_char(rc.asof_ts, 'MMDDHH24MI')
+              AND COALESCE(NULLIF(ec.payload_parsed->>'horse_no', ''), '0')::INT = rc.horse_no
+            ORDER BY ec.announce_mmddhhmi DESC, ec.id DESC
+            LIMIT 1
+        ) picked ON TRUE
+    ),
+    runner_base AS (
+        SELECT
+            rc.race_id,
+            rc.race_date,
+            rc.track_code,
+            rc.race_no,
+            rc.post_time,
+            rc.asof_ts,
+            rc.tc_event_id,
+            rc.tc_announce_mmddhhmi,
+            rc.horse_id,
+            rc.horse_no,
+            rc.gate,
+            rc.jockey_id,
+            rc.trainer_id,
+            rc.carried_weight,
+            rc.se_body_weight,
+            rc.se_body_weight_diff
+        FROM runner_candidates rc
+        LEFT JOIN av_selected av
+            ON av.race_id = rc.race_id
+           AND av.asof_ts = rc.asof_ts
+           AND av.horse_no = rc.horse_no
+        WHERE rc.scratch_flag = FALSE
+          AND av.av_event_id IS NULL
+    ),
+    jc_selected AS (
+        SELECT
+            rb.race_id,
+            rb.asof_ts,
+            rb.horse_no,
+            picked.id AS jc_event_id,
+            picked.announce_mmddhhmi AS jc_announce_mmddhhmi,
+            picked.jockey_code_after,
+            picked.carried_weight_x10_after
+        FROM runner_base rb
+        LEFT JOIN LATERAL (
+            SELECT
+                ec.id,
+                ec.announce_mmddhhmi,
+                ec.payload_parsed->>'jockey_code_after' AS jockey_code_after,
+                ec.payload_parsed->>'carried_weight_x10_after' AS carried_weight_x10_after
+            FROM core.event_change ec
+            WHERE ec.race_id = rb.race_id
+              AND ec.record_type = 'JC'
+              AND COALESCE(ec.announce_mmddhhmi, '00000000') <= to_char(rb.asof_ts, 'MMDDHH24MI')
+              AND COALESCE(NULLIF(ec.payload_parsed->>'horse_no', ''), '0')::INT = rb.horse_no
+            ORDER BY ec.announce_mmddhhmi DESC, ec.id DESC
+            LIMIT 1
+        ) picked ON TRUE
+    ),
+    av_horses_asof AS (
+        SELECT
+            x.race_id,
+            x.asof_ts,
+            to_jsonb(COALESCE(array_agg(DISTINCT x.horse_no), ARRAY[]::INT[])) AS av_horse_nos
+        FROM (
+            SELECT
+                dr.race_id,
+                dr.asof_ts,
+                COALESCE(NULLIF(ec.payload_parsed->>'horse_no', ''), '0')::INT AS horse_no
+            FROM (SELECT DISTINCT race_id, asof_ts FROM runner_candidates) dr
+            JOIN core.event_change ec
+              ON ec.race_id = dr.race_id
+             AND ec.record_type = 'AV'
+             AND COALESCE(ec.announce_mmddhhmi, '00000000') <= to_char(dr.asof_ts, 'MMDDHH24MI')
+        ) x
+        WHERE x.horse_no > 0
+        GROUP BY x.race_id, x.asof_ts
     ),
     o1_header_selected AS (
         SELECT
@@ -146,6 +264,64 @@ def build_snapshot(
             LIMIT 1
         ) picked ON TRUE
     ),
+    dm_header_selected AS (
+        SELECT
+            rb.race_id,
+            rb.asof_ts,
+            picked.data_kbn,
+            picked.data_create_ymd,
+            picked.data_create_hm
+        FROM (SELECT DISTINCT race_id, asof_ts FROM runner_base) rb
+        LEFT JOIN LATERAL (
+            SELECT
+                d.data_kbn,
+                d.data_create_ymd,
+                d.data_create_hm
+            FROM core.rt_mining_dm d
+            WHERE d.race_id = rb.race_id
+              AND d.data_kbn IN (1, 2, 3)
+              AND (d.data_create_ymd || d.data_create_hm) <= to_char(rb.asof_ts, 'YYYYMMDDHH24MI')
+            ORDER BY
+                CASE d.data_kbn
+                    WHEN 3 THEN 1
+                    WHEN 2 THEN 2
+                    WHEN 1 THEN 3
+                    ELSE 9
+                END,
+                d.data_create_ymd DESC,
+                d.data_create_hm DESC
+            LIMIT 1
+        ) picked ON TRUE
+    ),
+    tm_header_selected AS (
+        SELECT
+            rb.race_id,
+            rb.asof_ts,
+            picked.data_kbn,
+            picked.data_create_ymd,
+            picked.data_create_hm
+        FROM (SELECT DISTINCT race_id, asof_ts FROM runner_base) rb
+        LEFT JOIN LATERAL (
+            SELECT
+                t.data_kbn,
+                t.data_create_ymd,
+                t.data_create_hm
+            FROM core.rt_mining_tm t
+            WHERE t.race_id = rb.race_id
+              AND t.data_kbn IN (1, 2, 3)
+              AND (t.data_create_ymd || t.data_create_hm) <= to_char(rb.asof_ts, 'YYYYMMDDHH24MI')
+            ORDER BY
+                CASE t.data_kbn
+                    WHEN 3 THEN 1
+                    WHEN 2 THEN 2
+                    WHEN 1 THEN 3
+                    ELSE 9
+                END,
+                t.data_create_ymd DESC,
+                t.data_create_hm DESC
+            LIMIT 1
+        ) picked ON TRUE
+    ),
     joined AS (
         SELECT
             rb.race_id,
@@ -155,9 +331,16 @@ def build_snapshot(
             rb.horse_id,
             rb.horse_no,
             rb.gate,
-            rb.jockey_id,
+            CASE
+                WHEN jcs.jockey_code_after ~ '^[0-9]+$' THEN jcs.jockey_code_after::BIGINT
+                ELSE rb.jockey_id
+            END AS jockey_id,
             rb.trainer_id,
-            rb.carried_weight,
+            CASE
+                WHEN jcs.carried_weight_x10_after ~ '^[0-9]+$' THEN
+                    ROUND(jcs.carried_weight_x10_after::numeric / 10.0, 1)
+                ELSE rb.carried_weight
+            END AS carried_weight,
             COALESCE(wd.body_weight_kg, rb.se_body_weight) AS body_weight_asof,
             CASE
                 WHEN wd.horse_no IS NOT NULL THEN
@@ -194,8 +377,34 @@ def build_snapshot(
             (o1w.win_odds_x10 IS NULL) AS odds_missing_flag,
             final.odds_win AS odds_win_final,
             final.pop_win AS pop_win_final,
-            whs.announce_mmddhhmi AS wh_announce_mmddhhmi
+            whs.announce_mmddhhmi AS wh_announce_mmddhhmi,
+            jsonb_strip_nulls(
+                jsonb_build_object(
+                    'tc_event_id', rb.tc_event_id,
+                    'tc_announce_mmddhhmi', rb.tc_announce_mmddhhmi,
+                    'jc_event_id', jcs.jc_event_id,
+                    'jc_announce_mmddhhmi', jcs.jc_announce_mmddhhmi,
+                    'av_horse_nos', avh.av_horse_nos
+                )
+            ) AS event_change_keys,
+            dmhs.data_kbn AS dm_kbn,
+            CASE
+                WHEN dmhs.data_create_ymd IS NULL THEN NULL
+                ELSE (dmhs.data_create_ymd || dmhs.data_create_hm)
+            END AS dm_create_time,
+            tmhs.data_kbn AS tm_kbn,
+            CASE
+                WHEN tmhs.data_create_ymd IS NULL THEN NULL
+                ELSE (tmhs.data_create_ymd || tmhs.data_create_hm)
+            END AS tm_create_time
         FROM runner_base rb
+        LEFT JOIN jc_selected jcs
+            ON jcs.race_id = rb.race_id
+           AND jcs.asof_ts = rb.asof_ts
+           AND jcs.horse_no = rb.horse_no
+        LEFT JOIN av_horses_asof avh
+            ON avh.race_id = rb.race_id
+           AND avh.asof_ts = rb.asof_ts
         LEFT JOIN o1_header_selected ohs
             ON ohs.race_id = rb.race_id
            AND ohs.asof_ts = rb.asof_ts
@@ -212,6 +421,12 @@ def build_snapshot(
            AND wd.data_kbn = whs.data_kbn
            AND wd.announce_mmddhhmi = whs.announce_mmddhhmi
            AND wd.horse_no = rb.horse_no
+        LEFT JOIN dm_header_selected dmhs
+            ON dmhs.race_id = rb.race_id
+           AND dmhs.asof_ts = rb.asof_ts
+        LEFT JOIN tm_header_selected tmhs
+            ON tmhs.race_id = rb.race_id
+           AND tmhs.asof_ts = rb.asof_ts
         LEFT JOIN core.odds_final final
             ON final.race_id = rb.race_id
            AND final.horse_id = rb.horse_id
@@ -291,11 +506,11 @@ def build_snapshot(
         odds_win_final,
         pop_win_final,
         wh_announce_mmddhhmi,
-        NULL::jsonb,
-        NULL::smallint,
-        NULL::char(12),
-        NULL::smallint,
-        NULL::char(12),
+        event_change_keys,
+        dm_kbn,
+        dm_create_time::char(12),
+        tm_kbn,
+        tm_create_time::char(12),
         %(code_version)s
     FROM ranked
     ON CONFLICT (race_id, horse_no, asof_ts) DO UPDATE SET
@@ -345,7 +560,10 @@ def build_snapshot(
             COUNT(*) AS n_rows,
             COUNT(*) FILTER (WHERE odds_missing_flag) AS n_odds_missing,
             COUNT(*) FILTER (WHERE bw_source = 'SE') AS n_bw_from_se,
-            COUNT(*) FILTER (WHERE bw_source = 'WH') AS n_bw_from_wh
+            COUNT(*) FILTER (WHERE bw_source = 'WH') AS n_bw_from_wh,
+            COUNT(*) FILTER (WHERE event_change_keys IS NOT NULL) AS n_event_keys,
+            COUNT(*) FILTER (WHERE dm_kbn IS NOT NULL) AS n_dm_selected,
+            COUNT(*) FILTER (WHERE tm_kbn IS NOT NULL) AS n_tm_selected
         FROM mart.t5_runner_snapshot
         WHERE race_date BETWEEN %(from_date)s AND %(to_date)s
           AND feature_set = %(feature_set)s
@@ -353,11 +571,17 @@ def build_snapshot(
         {"from_date": from_date, "to_date": to_date, "feature_set": feature_set},
     )
     logger.info(
-        "snapshot rows=%s odds_missing=%s bw_source(SE)=%s bw_source(WH)=%s",
+        (
+            "snapshot rows=%s odds_missing=%s bw_source(SE)=%s "
+            "bw_source(WH)=%s event_keys=%s dm=%s tm=%s"
+        ),
         int(stats["n_rows"]) if stats else 0,
         int(stats["n_odds_missing"]) if stats else 0,
         int(stats["n_bw_from_se"]) if stats else 0,
         int(stats["n_bw_from_wh"]) if stats else 0,
+        int(stats["n_event_keys"]) if stats else 0,
+        int(stats["n_dm_selected"]) if stats else 0,
+        int(stats["n_tm_selected"]) if stats else 0,
     )
 
 

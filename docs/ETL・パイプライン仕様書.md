@@ -6,7 +6,7 @@
   * ローダ: `scripts/load_to_db.py`
   * パーサ: `app/infrastructure/parsers.py`
   * DBスキーマ: `migrations/0001_init_db.sql`（+ `migrations/*.sql`）
-* 最終更新: 2026-02-12
+* 最終更新: 2026-02-15
 
 ---
 
@@ -188,7 +188,16 @@ uv run python scripts/load_to_db.py --input "data/DIFF_*.jsonl"
 ### 6.8 core.event_change（WE/AV/JC/TC/CC）
 
 * 現状は `payload_parsed`（監査キー＋最小構造化）を JSONB として保存し、`raw` も同梱する（詳細は `docs/データ辞書・正規化仕様書.md`）
-* ただし **mart（T-5スナップ）への反映（scratch/変更フラグ生成）はTODO**
+* T-5スナップ（`mart.t5_runner_snapshot`）への反映は後段バッチで実施する（現状: `TC/AV/JC` は `scripts/build_t5_snapshot.py` で反映、`WE/CC` はTODO）
+
+### 6.9 core.mining_* / core.rt_mining_*（DM/TM）
+
+* Backfillable（`dataspec="MING"`）:
+  * `DM/TM` は `core.mining_dm` / `core.mining_tm` に UPSERT（主キー: `(race_id, horse_no)` の上書き）
+* Realtime-only（`dataspec in {"0B13","0B17"}`）:
+  * 速報 `DM/TM` は **履歴保持**として `core.rt_mining_dm` / `core.rt_mining_tm` に投入（主キー: `(race_id, data_kbn, data_create_ymd, data_create_hm, horse_no)`）
+  * `data_kbn=0`（削除）の場合は、payloadヘッダーから `(race_id, data_create_ymd, data_create_hm)` を抽出し、該当 create_time の行を削除する
+  * DDL: `migrations/20260215_add_rt_mining_dm_tm.sql`
 
 ---
 
@@ -206,7 +215,7 @@ uv run python scripts/load_to_db.py --input "data/DIFF_*.jsonl"
 
 ### 7.3 raw.jv_ck_event（CK）
 
-* `payload_sha256` を含む UNIQUE で重複排除できる設計（ただし現状はパーサ/ローダ整合が必要）
+* `payload_sha256` を含む UNIQUE で重複排除できる設計（E2E投入確認済）
 
 ---
 
@@ -256,11 +265,12 @@ uv run python scripts/verify_parsers.py
 
 * `core.runner` のスキーマとローダのINSERT列が不一致になり得る（スキーマ/ローダの統一が必要）
 * CK（SNPN/CK）の投入:
-  * パーサ/ローダ/DDLは揃っているが、**E2E検証待ち**（参照: `docs/実装ギャップチェックリスト.md`, `docs/DB構築ToDo.md`）
+  * パーサ/ローダ/DDLは揃っており、E2E投入確認済（参照: `docs/DB構築ToDo.md`）
 * 時系列オッズ（0B41）の投入:
   * `scripts/load_to_db.py` は `dataspec=="0B41"` の `O1` を `core.o1_*` に投入する実装を持つ
-  * TODO: **E2E検証**し、`O1`（確定オッズ）への誤ルーティングが無いことを確認する
-* DM/TM（MING）の正規化が簡易で、実質 `payload_raw` 保持に近い（horse_no/スコア等の抽出が必要）
+  * E2E確認済（`core.odds_final` への誤ルーティング無し）
+* DM/TM（MING/0B13/0B17）:
+  * `horse_no`/`dm_time_x10`/`tm_score` の抽出は実装済み。運用（0B13/0B17）は `core.rt_mining_*` に履歴保持する（as-of採用用）
 
 ---
 

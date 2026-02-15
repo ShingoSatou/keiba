@@ -1729,8 +1729,12 @@ class CKRecord:
 # 位置は1-indexed → 0-indexed に変換して使用
 DM_DATA_KBN_START = 2  # 仕様:位置3, 1バイト
 DM_DATA_KBN_LEN = 1
+DM_DATA_CREATE_YMD_START = 3  # 仕様:位置4, 8バイト (yyyymmdd)
+DM_DATA_CREATE_YMD_LEN = 8
 DM_RACE_KEY_START = 11  # 仕様:位置12(開催年)〜位置27(レース番号末尾), 16バイト
 DM_RACE_KEY_LEN = 16
+DM_DATA_CREATE_HM_START = 27  # 仕様:位置28, 4バイト (hhmm)
+DM_DATA_CREATE_HM_LEN = 4
 DM_MINING_START = 31  # 仕様:位置32(1-indexed), 繰返18回, 各15バイト
 DM_MINING_REPEAT = 18
 DM_MINING_ITEM_LEN = 15
@@ -1752,6 +1756,8 @@ class DMRecord:
     race_id: int
     horse_no: int
     data_kbn: int
+    data_create_ymd: str
+    data_create_hm: str
     dm_time_x10: int | None
     dm_rank: int | None
     payload_raw: str
@@ -1768,6 +1774,16 @@ class DMRecord:
             b_payload = b_payload.ljust(303, b" ")
 
         data_kbn = _slice_byte_int(b_payload, DM_DATA_KBN_START, DM_DATA_KBN_LEN)
+        data_create_ymd = _slice_byte_decode(
+            b_payload, DM_DATA_CREATE_YMD_START, DM_DATA_CREATE_YMD_LEN
+        )
+        data_create_hm = _slice_byte_decode(
+            b_payload, DM_DATA_CREATE_HM_START, DM_DATA_CREATE_HM_LEN
+        )
+        if not data_create_ymd:
+            data_create_ymd = "00000000"
+        if not data_create_hm:
+            data_create_hm = "0000"
 
         # race_id を構築
         if race_id == 0:
@@ -1815,6 +1831,8 @@ class DMRecord:
                     race_id=race_id,
                     horse_no=horse_no,
                     data_kbn=data_kbn,
+                    data_create_ymd=data_create_ymd,
+                    data_create_hm=data_create_hm,
                     dm_time_x10=dm_time_x10,
                     dm_rank=None,
                     payload_raw=payload,
@@ -1837,8 +1855,12 @@ class DMRecord:
 # 仕様: 29.対戦型データマイニング予想 レコード長141バイト
 TM_DATA_KBN_START = 2  # 仕様:位置3, 1バイト
 TM_DATA_KBN_LEN = 1
+TM_DATA_CREATE_YMD_START = 3  # 仕様:位置4, 8バイト (yyyymmdd)
+TM_DATA_CREATE_YMD_LEN = 8
 TM_RACE_KEY_START = 11  # 仕様:位置12〜27, 16バイト
 TM_RACE_KEY_LEN = 16
+TM_DATA_CREATE_HM_START = 27  # 仕様:位置28, 4バイト (hhmm)
+TM_DATA_CREATE_HM_LEN = 4
 TM_MINING_START = 31  # 仕様:位置32(1-indexed), 繰返18回, 各6バイト
 TM_MINING_REPEAT = 18
 TM_MINING_ITEM_LEN = 6
@@ -1856,6 +1878,8 @@ class TMRecord:
     race_id: int
     horse_no: int
     data_kbn: int
+    data_create_ymd: str
+    data_create_hm: str
     tm_score: int | None
     tm_rank: int | None
     payload_raw: str
@@ -1872,6 +1896,16 @@ class TMRecord:
             b_payload = b_payload.ljust(141, b" ")
 
         data_kbn = _slice_byte_int(b_payload, TM_DATA_KBN_START, TM_DATA_KBN_LEN)
+        data_create_ymd = _slice_byte_decode(
+            b_payload, TM_DATA_CREATE_YMD_START, TM_DATA_CREATE_YMD_LEN
+        )
+        data_create_hm = _slice_byte_decode(
+            b_payload, TM_DATA_CREATE_HM_START, TM_DATA_CREATE_HM_LEN
+        )
+        if not data_create_ymd:
+            data_create_ymd = "00000000"
+        if not data_create_hm:
+            data_create_hm = "0000"
 
         # race_id を構築
         if race_id == 0:
@@ -1906,6 +1940,8 @@ class TMRecord:
                     race_id=race_id,
                     horse_no=horse_no,
                     data_kbn=data_kbn,
+                    data_create_ymd=data_create_ymd,
+                    data_create_hm=data_create_hm,
                     tm_score=tm_score_x10,
                     tm_rank=None,
                     payload_raw=payload,

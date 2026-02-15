@@ -183,3 +183,87 @@ def test_process_file_counts_ck_skipped_make_date(tmp_path, monkeypatch):
 
     assert stats["ck"] == 0
     assert stats["ck_skipped_make_date"] == 1
+
+
+def test_process_file_routes_rt_mining_for_0b13(tmp_path, monkeypatch):
+    file_path = tmp_path / "0B13_test.jsonl"
+    _write_jsonl(file_path, [{"rec_id": "DM", "payload": "dm_payload"}])
+
+    called = {"rt": 0, "core": 0}
+
+    monkeypatch.setattr(load_to_db, "prepare_master_data_cache", lambda db: (set(), set()))
+    monkeypatch.setattr(load_to_db, "insert_raw_records_batch", lambda db, dataspec, batch: None)
+    monkeypatch.setattr(
+        load_to_db.DMRecord,
+        "parse",
+        lambda payload: [
+            SimpleNamespace(
+                race_id=202602030501,
+                horse_no=1,
+                data_kbn=3,
+                data_create_ymd="20260203",
+                data_create_hm="1230",
+                dm_time_x10=900,
+                dm_rank=1,
+                payload_raw=payload,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        load_to_db,
+        "insert_rt_mining_records_batch",
+        lambda db, rec_id, records: called.__setitem__("rt", called["rt"] + len(records))
+        or len(records),
+    )
+    monkeypatch.setattr(
+        load_to_db,
+        "insert_mining_records_batch",
+        lambda db, rec_id, records: called.__setitem__("core", called["core"] + len(records))
+        or len(records),
+    )
+
+    stats = load_to_db.process_file(_DummyDB(), file_path)
+
+    assert stats["mining"] == 1
+    assert called["rt"] == 1
+    assert called["core"] == 0
+
+
+def test_process_file_applies_rt_mining_delete_for_kbn0(tmp_path, monkeypatch):
+    file_path = tmp_path / "0B17_test.jsonl"
+    _write_jsonl(file_path, [{"rec_id": "TM", "payload": "tm_payload"}])
+
+    called = {"delete": 0}
+
+    monkeypatch.setattr(load_to_db, "prepare_master_data_cache", lambda db: (set(), set()))
+    monkeypatch.setattr(load_to_db, "insert_raw_records_batch", lambda db, dataspec, batch: None)
+    monkeypatch.setattr(
+        load_to_db,
+        "_extract_rt_mining_header",
+        lambda payload: {
+            "rec_type": "TM",
+            "race_id": 202602030501,
+            "data_kbn": 0,
+            "data_create_ymd": "20260203",
+            "data_create_hm": "1230",
+        },
+    )
+    monkeypatch.setattr(
+        load_to_db.TMRecord,
+        "parse",
+        lambda payload: (_ for _ in ()).throw(AssertionError("TMRecord.parse should not run")),
+    )
+    monkeypatch.setattr(
+        load_to_db,
+        "delete_rt_mining_records",
+        lambda db, rec_id, race_id, data_create_ymd, data_create_hm: called.__setitem__(
+            "delete", called["delete"] + 1
+        )
+        or 1,
+    )
+
+    stats = load_to_db.process_file(_DummyDB(), file_path)
+
+    assert stats["rt_mining_delete"] == 1
+    assert stats["mining"] == 0
+    assert called["delete"] == 1

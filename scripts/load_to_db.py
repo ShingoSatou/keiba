@@ -159,6 +159,52 @@ MINING_TM_SQL = """
         payload_raw = EXCLUDED.payload_raw
 """
 
+RT_MINING_DM_SQL = """
+    INSERT INTO core.rt_mining_dm (
+        race_id, data_kbn, data_create_ymd, data_create_hm,
+        horse_no, dm_time_x10, dm_rank, payload_raw
+    )
+    VALUES (
+        %(race_id)s, %(data_kbn)s, %(data_create_ymd)s, %(data_create_hm)s,
+        %(horse_no)s, %(dm_time_x10)s, %(dm_rank)s, %(payload_raw)s
+    )
+    ON CONFLICT (race_id, data_kbn, data_create_ymd, data_create_hm, horse_no) DO UPDATE SET
+        dm_time_x10 = EXCLUDED.dm_time_x10,
+        dm_rank = EXCLUDED.dm_rank,
+        payload_raw = EXCLUDED.payload_raw,
+        ingested_at = now()
+"""
+
+RT_MINING_TM_SQL = """
+    INSERT INTO core.rt_mining_tm (
+        race_id, data_kbn, data_create_ymd, data_create_hm,
+        horse_no, tm_score, tm_rank, payload_raw
+    )
+    VALUES (
+        %(race_id)s, %(data_kbn)s, %(data_create_ymd)s, %(data_create_hm)s,
+        %(horse_no)s, %(tm_score)s, %(tm_rank)s, %(payload_raw)s
+    )
+    ON CONFLICT (race_id, data_kbn, data_create_ymd, data_create_hm, horse_no) DO UPDATE SET
+        tm_score = EXCLUDED.tm_score,
+        tm_rank = EXCLUDED.tm_rank,
+        payload_raw = EXCLUDED.payload_raw,
+        ingested_at = now()
+"""
+
+RT_MINING_DM_DELETE_SQL = """
+    DELETE FROM core.rt_mining_dm
+    WHERE race_id = %(race_id)s
+      AND data_create_ymd = %(data_create_ymd)s
+      AND data_create_hm = %(data_create_hm)s
+"""
+
+RT_MINING_TM_DELETE_SQL = """
+    DELETE FROM core.rt_mining_tm
+    WHERE race_id = %(race_id)s
+      AND data_create_ymd = %(data_create_ymd)s
+      AND data_create_hm = %(data_create_hm)s
+"""
+
 CK_RAW_SQL = """
     INSERT INTO raw.jv_ck_event (
         dataspec, record_type, data_kbn, data_create_ymd,
@@ -984,6 +1030,8 @@ def _mining_params(record) -> dict:
         "race_id": record.race_id,
         "horse_no": record.horse_no,
         "data_kbn": record.data_kbn,
+        "data_create_ymd": getattr(record, "data_create_ymd", "00000000"),
+        "data_create_hm": getattr(record, "data_create_hm", "0000"),
         "dm_time_x10": getattr(record, "dm_time_x10", None),
         "dm_rank": getattr(record, "dm_rank", None),
         "tm_score": getattr(record, "tm_score", None),
@@ -1001,9 +1049,84 @@ def insert_mining_records_batch(db: Database, rec_id: str, records: list) -> int
     return len(records)
 
 
+def insert_rt_mining_records_batch(db: Database, rec_id: str, records: list) -> int:
+    """core.rt_mining_dm / core.rt_mining_tm に速報マイニング履歴をバッチ挿入"""
+    if not records:
+        return 0
+    sql = RT_MINING_DM_SQL if rec_id == "DM" else RT_MINING_TM_SQL
+    db.execute_many(sql, [_mining_params(record) for record in records])
+    return len(records)
+
+
+def delete_rt_mining_records(
+    db: Database,
+    rec_id: str,
+    race_id: int,
+    data_create_ymd: str,
+    data_create_hm: str,
+) -> int:
+    """data_kbn=0 (削除) レコードを適用する"""
+    sql = RT_MINING_DM_DELETE_SQL if rec_id == "DM" else RT_MINING_TM_DELETE_SQL
+    db.execute(
+        sql,
+        {
+            "race_id": race_id,
+            "data_create_ymd": data_create_ymd,
+            "data_create_hm": data_create_hm,
+        },
+    )
+    return 1
+
+
 def insert_mining_record(db: Database, rec_id: str, record) -> None:
     """互換用: 単一レコード挿入"""
     insert_mining_records_batch(db, rec_id, [record])
+
+
+def _extract_rt_mining_header(payload: str) -> dict | None:
+    """DM/TM payloadからヘッダー（race_id, kbn, create_time）を抽出"""
+    try:
+        b_payload = payload.encode("cp932")
+    except UnicodeEncodeError:
+        b_payload = payload.encode("cp932", errors="replace")
+
+    if len(b_payload) < 31:
+        b_payload = b_payload.ljust(31, b" ")
+
+    rec_type = b_payload[0:2].decode("cp932", errors="ignore").strip()
+    data_kbn_raw = b_payload[2:3].decode("cp932", errors="ignore").strip()
+    data_create_ymd = b_payload[3:11].decode("cp932", errors="ignore").strip() or "00000000"
+    race_key = b_payload[11:27].decode("cp932", errors="ignore")
+    data_create_hm = b_payload[27:31].decode("cp932", errors="ignore").strip() or "0000"
+
+    if rec_type not in {"DM", "TM"}:
+        return None
+
+    try:
+        data_kbn = int(data_kbn_raw)
+    except (TypeError, ValueError):
+        data_kbn = -1
+
+    race_id = 0
+    if len(race_key) >= 16:
+        try:
+            year = int(race_key[0:4])
+            month = int(race_key[4:6])
+            day = int(race_key[6:8])
+            track = int(race_key[8:10])
+            race_no = int(race_key[14:16])
+            date_int = year * 10000 + month * 100 + day
+            race_id = date_int * 10000 + track * 100 + race_no
+        except ValueError:
+            race_id = 0
+
+    return {
+        "rec_type": rec_type,
+        "race_id": race_id,
+        "data_kbn": data_kbn,
+        "data_create_ymd": data_create_ymd,
+        "data_create_hm": data_create_hm,
+    }
 
 
 def insert_event_change(db: Database, record: EventChangeRecord) -> None:
@@ -1239,6 +1362,7 @@ def process_file(db: Database, file_path: Path) -> dict[str, int]:
         "wh": 0,
         "training": 0,
         "mining": 0,
+        "rt_mining_delete": 0,
         "ck": 0,
         "ck_skipped_make_date": 0,
         "event": 0,
@@ -1249,6 +1373,7 @@ def process_file(db: Database, file_path: Path) -> dict[str, int]:
     # ファイル名からdataspecを推定
     dataspec = file_path.stem.split("_")[0]
     skip_raw_jv_raw = dataspec in {"SNPN", "SNAP"}
+    is_rt_mining_dataspec = dataspec in {"0B13", "0B17"}
 
     if dataspec == "0B41":
         logger.info("  0B41 fast path: Processing raw + O1 records in single pass...")
@@ -1383,10 +1508,16 @@ def process_file(db: Database, file_path: Path) -> dict[str, int]:
     def flush_mining(force: bool = False) -> None:
         nonlocal mining_dm_batch, mining_tm_batch
         if mining_dm_batch and (force or len(mining_dm_batch) >= MINING_BATCH_SIZE):
-            stats["mining"] += insert_mining_records_batch(db, "DM", mining_dm_batch)
+            if is_rt_mining_dataspec:
+                stats["mining"] += insert_rt_mining_records_batch(db, "DM", mining_dm_batch)
+            else:
+                stats["mining"] += insert_mining_records_batch(db, "DM", mining_dm_batch)
             mining_dm_batch = []
         if mining_tm_batch and (force or len(mining_tm_batch) >= MINING_BATCH_SIZE):
-            stats["mining"] += insert_mining_records_batch(db, "TM", mining_tm_batch)
+            if is_rt_mining_dataspec:
+                stats["mining"] += insert_rt_mining_records_batch(db, "TM", mining_tm_batch)
+            else:
+                stats["mining"] += insert_mining_records_batch(db, "TM", mining_tm_batch)
             mining_tm_batch = []
 
     def flush_ck(force: bool = False) -> None:
@@ -1488,7 +1619,24 @@ def process_file(db: Database, file_path: Path) -> dict[str, int]:
                 flush_training()
 
             elif rec_id in ("DM", "TM"):
-                if rec_id == "DM":
+                if is_rt_mining_dataspec:
+                    header = _extract_rt_mining_header(payload)
+                    if header and header["data_kbn"] == 0 and header["race_id"] > 0:
+                        flush_mining(force=True)
+                        stats["rt_mining_delete"] += delete_rt_mining_records(
+                            db,
+                            rec_id=rec_id,
+                            race_id=header["race_id"],
+                            data_create_ymd=header["data_create_ymd"],
+                            data_create_hm=header["data_create_hm"],
+                        )
+                    elif rec_id == "DM":
+                        mining_list = DMRecord.parse(payload)
+                        mining_dm_batch.extend(mining_list)
+                    else:
+                        mining_list = TMRecord.parse(payload)
+                        mining_tm_batch.extend(mining_list)
+                elif rec_id == "DM":
                     mining_list = DMRecord.parse(payload)
                     mining_dm_batch.extend(mining_list)
                 else:
