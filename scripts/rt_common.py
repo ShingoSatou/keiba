@@ -26,7 +26,11 @@ SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 DATA_DIR = PROJECT_ROOT.parent / "data"
 
 # デフォルトの dataspecs（ops 用）
-OPS_DEFAULT_DATASPECS = ["0B41", "0B11", "0B16", "0B13", "0B17"]
+# NOTE:
+# - 変更系は 0B14 (速報開催情報(一括), 開催日単位) を使用する。
+# - 0B16 (速報開催情報(指定)) は JVWatchEvent で得たイベント key 前提のため、
+#   本リポジトリのポーリング運用（開催日/レースkey）では通常使わない。
+OPS_DEFAULT_DATASPECS = ["0B41", "0B14", "0B11", "0B13", "0B17"]
 
 # Windows 32bit Python パス（環境変数 or デフォルト）
 DEFAULT_PYTHON32 = os.getenv(
@@ -119,7 +123,7 @@ def find_existing_output(output_dir: Path, dataspec: str, racekey: str) -> Path 
 def call_extract_rt(
     python32_path: str,
     dataspec: str,
-    racekey: str,
+    request_key: str,
     output_dir: Path,
     dry_run: bool = False,
 ) -> tuple[bool, str]:
@@ -128,7 +132,7 @@ def call_extract_rt(
     Args:
         python32_path: Windows 32bit Python の実行パス
         dataspec: データ種別
-        racekey: レースキー
+        request_key: 要求キー（レースキー/開催日/イベントキー）
         output_dir: 出力ディレクトリ
         dry_run: DRY-RUN モード
 
@@ -148,8 +152,8 @@ def call_extract_rt(
         win_script_path,
         "--dataspec",
         dataspec,
-        "--racekey",
-        racekey,
+        "--key",
+        request_key,
         "--output-dir",
         _to_windows_path(str(output_dir)),
     ]

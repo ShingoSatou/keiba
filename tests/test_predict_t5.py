@@ -198,3 +198,38 @@ def test_build_audit_payload_has_required_keys(tmp_path):
     assert "tm_kbn" in race and "tm_create_time" in race
     assert "code_version" in race
     assert race["counts"]["buy"] == 1
+    assert "summary" in payload
+    assert "missing_rates_pct" in payload["summary"]
+    assert "source_refs" in race
+    assert "event_changes" in race["source_refs"]
+
+
+def test_apply_we_cc_overrides_updates_distance_surface_and_going():
+    frame = pd.DataFrame(
+        [
+            {
+                "race_id": 202602030501,
+                "surface": 1,
+                "distance_m": 1600,
+                "going": 1,
+                "weather": 1,
+                "event_change_keys": {
+                    "cc_event_id": 101,
+                    "cc_distance_m_after": "1400",
+                    "cc_track_type_after": "24",
+                    "we_event_id": 201,
+                    "we_weather_now": "3",
+                    "we_going_turf_now": "2",
+                    "we_going_dirt_now": "4",
+                },
+            }
+        ]
+    )
+    overridden = predict_t5._apply_we_cc_overrides(frame)
+
+    assert int(overridden.loc[0, "distance_m"]) == 1400
+    assert int(overridden.loc[0, "surface"]) == 2
+    assert int(overridden.loc[0, "going"]) == 4
+    assert int(overridden.loc[0, "weather"]) == 3
+    assert predict_t5.distance_to_bucket(int(overridden.loc[0, "distance_m"])) == 1400
+    assert "distance_m" in overridden.loc[0, "race_field_overrides"]

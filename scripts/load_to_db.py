@@ -465,6 +465,18 @@ def upsert_race(db: Database, race: RaceRecord) -> None:
             %(class_code)s, %(field_size)s, %(start_time)s
         )
         ON CONFLICT (race_id) DO UPDATE SET
+            surface = CASE
+                WHEN EXCLUDED.surface > 0
+                    AND (core.race.surface = 0 OR core.race.surface IS NULL)
+                THEN EXCLUDED.surface
+                ELSE core.race.surface
+            END,
+            distance_m = CASE
+                WHEN EXCLUDED.distance_m > 0
+                    AND (core.race.distance_m = 0 OR core.race.distance_m IS NULL)
+                THEN EXCLUDED.distance_m
+                ELSE core.race.distance_m
+            END,
             going = EXCLUDED.going,
             weather = EXCLUDED.weather,
             field_size = EXCLUDED.field_size,
