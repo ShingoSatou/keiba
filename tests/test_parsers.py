@@ -3,6 +3,20 @@
 """
 
 from app.infrastructure.parsers import (
+    RA_COURSE_START,
+    RA_DISTANCE_START,
+    RA_FIELD_SIZE_START,
+    RA_KAI_START,
+    RA_MONTHDAY_START,
+    RA_NICHI_START,
+    RA_RACE_NAME_START,
+    RA_RACE_NO_START,
+    RA_START_TIME_START,
+    RA_TRACK_CODE_START,
+    RA_TRACK_TYPE_START,
+    RA_TURF_GOING_START,
+    RA_WEATHER_START,
+    RA_YEAR_START,
     CKRecord,
     DMRecord,
     EventChangeRecord,
@@ -84,6 +98,45 @@ class TestRaceRecordParser:
         assert record.race_no == 12
         assert record.distance_m == 1600
         assert record.surface == 1  # 芝 (Code 10)
+
+    def test_parse_with_multibyte_fields_keeps_byte_offsets(self):
+        b_payload = bytearray(b" " * 1200)
+
+        def put(offset: int, text: str):
+            b = text.encode("cp932")
+            b_payload[offset : offset + len(b)] = b
+
+        # RAヘッダー/キー
+        put(0, "RA1")
+        put(RA_YEAR_START, "2026")
+        put(RA_MONTHDAY_START, "0203")
+        put(RA_TRACK_CODE_START, "05")
+        put(RA_KAI_START, "05")
+        put(RA_NICHI_START, "11")
+        put(RA_RACE_NO_START, "12")
+        # マルチバイト文字を含む項目
+        put(RA_RACE_NAME_START, "テストレース")
+        # 条件/時刻
+        put(RA_DISTANCE_START, "1600")
+        put(RA_TRACK_TYPE_START, "10")
+        put(RA_COURSE_START, "01")
+        put(RA_START_TIME_START, "1540")
+        put(RA_FIELD_SIZE_START, "18")
+        put(RA_WEATHER_START, "1")
+        put(RA_TURF_GOING_START, "2")
+
+        payload = bytes(b_payload).decode("cp932", errors="replace")
+        record = RaceRecord.parse(payload)
+
+        assert record.race_id == 202602030512
+        assert record.race_date is not None
+        assert record.track_code == 5
+        assert record.race_no == 12
+        assert record.distance_m == 1600
+        assert record.field_size == 18
+        assert record.start_time is not None
+        assert record.start_time.hour == 15
+        assert record.start_time.minute == 40
 
 
 class TestRunnerRecordParser:

@@ -123,6 +123,17 @@ def _slice_byte_int(data: bytes, start: int, length: int, default: int = 0) -> i
     return int(digits)
 
 
+def _slice_byte_time(data: bytes, start: int, length: int = 4) -> time | None:
+    """バイト列から時刻(HHMM)を取得"""
+    s = _slice_byte_decode(data, start, length)
+    if len(s) != 4 or not s.isdigit():
+        return None
+    try:
+        return time(int(s[:2]), int(s[2:4]))
+    except ValueError:
+        return None
+
+
 # =============================================================================
 # 共通ヘッダー (全レコード共通)
 # =============================================================================
@@ -213,49 +224,57 @@ class RaceRecord:
     @classmethod
     def parse(cls, payload: str) -> RaceRecord:
         """RAレコードをパース (JV-Data 4.9.0.1 準拠)"""
+        try:
+            b_payload = payload.encode("cp932")
+        except UnicodeEncodeError:
+            b_payload = payload.encode("cp932", errors="replace")
+
+        if len(b_payload) < RA_WEATHER_START + RA_WEATHER_LEN:
+            b_payload = b_payload.ljust(RA_WEATHER_START + RA_WEATHER_LEN, b" ")
+
         # 年月日からrace_dateを構築
         try:
-            year = _slice_int(payload, RA_YEAR_START, RA_YEAR_LEN)
-            monthday = _slice_decode(payload, RA_MONTHDAY_START, RA_MONTHDAY_LEN)
+            year = _slice_byte_int(b_payload, RA_YEAR_START, RA_YEAR_LEN)
+            monthday = _slice_byte_decode(b_payload, RA_MONTHDAY_START, RA_MONTHDAY_LEN)
             month = int(monthday[:2])
             day = int(monthday[2:4])
             race_date = date(year, month, day)
         except (ValueError, IndexError):
             race_date = None
 
-        track_code = _slice_int(payload, RA_TRACK_CODE_START, RA_TRACK_CODE_LEN)
-        race_no = _slice_int(payload, RA_RACE_NO_START, RA_RACE_NO_LEN)
+        track_code = _slice_byte_int(b_payload, RA_TRACK_CODE_START, RA_TRACK_CODE_LEN)
+        race_no = _slice_byte_int(b_payload, RA_RACE_NO_START, RA_RACE_NO_LEN)
 
         # トラックコードからサーフェス判定 (コード表2009参照)
         # 10-22: 芝, 23-29: ダート(含サンド), 51-59: 障害
         # 0: 不明(主に地方競馬・海外)
-        track_type_code = _slice_int(payload, RA_TRACK_TYPE_START, RA_TRACK_TYPE_LEN)
+        track_type_code = _slice_byte_int(b_payload, RA_TRACK_TYPE_START, RA_TRACK_TYPE_LEN)
         surface = 1  # デフォルト: 芝
         if 23 <= track_type_code <= 29:
             surface = 2  # ダート (27,28はサンドだが同等扱い)
         elif 51 <= track_type_code <= 59:
             surface = 3  # 障害
 
-        distance_m = _slice_int(payload, RA_DISTANCE_START, RA_DISTANCE_LEN)
+        distance_m = _slice_byte_int(b_payload, RA_DISTANCE_START, RA_DISTANCE_LEN)
 
         # 馬場状態 (芝 or ダート)
         if surface == 1:
-            going = _slice_int(payload, RA_TURF_GOING_START, RA_TURF_GOING_LEN)
+            going = _slice_byte_int(b_payload, RA_TURF_GOING_START, RA_TURF_GOING_LEN)
         else:
-            going = _slice_int(payload, RA_DIRT_GOING_START, RA_DIRT_GOING_LEN)
+            going = _slice_byte_int(b_payload, RA_DIRT_GOING_START, RA_DIRT_GOING_LEN)
 
-        weather = _slice_int(payload, RA_WEATHER_START, RA_WEATHER_LEN)
+        weather = _slice_byte_int(b_payload, RA_WEATHER_START, RA_WEATHER_LEN)
 
         # クラスコード・回りは一旦未取得（必要なら定義追加）
         class_code = 0
         turn_dir = None
 
         # コース区分 (数値変換できればする)
-        course_str = _slice_decode(payload, RA_COURSE_START, RA_COURSE_LEN)
+        course_str = _slice_byte_decode(b_payload, RA_COURSE_START, RA_COURSE_LEN)
         course_inout = int(course_str) if course_str.isdigit() else 0
 
-        field_size = _slice_int(payload, RA_FIELD_SIZE_START, RA_FIELD_SIZE_LEN)
-        start_time = _slice_time(payload, RA_START_TIME_START)
+        field_size = _slice_byte_int(b_payload, RA_FIELD_SIZE_START, RA_FIELD_SIZE_LEN)
+        start_time = _slice_byte_time(b_payload, RA_START_TIME_START, RA_START_TIME_LEN)
 
         # race_id を生成
         if race_date:

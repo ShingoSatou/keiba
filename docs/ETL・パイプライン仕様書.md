@@ -5,7 +5,7 @@
 * 実装（一次ソース）:
   * ローダ: `scripts/load_to_db.py`
   * パーサ: `app/infrastructure/parsers.py`
-  * DBスキーマ: `init_db.sql`
+  * DBスキーマ: `migrations/0001_init_db.sql`（+ `migrations/*.sql`）
 * 最終更新: 2026-02-12
 
 ---
@@ -22,7 +22,7 @@
 
 * JV-Linkからの取得仕様（参照: `docs/データ取得仕様書.md`）
 * レコード→カラムのデータ辞書（参照: `docs/データ辞書・正規化仕様書.md`）
-* DB設計（参照: `docs/DB設計仕様書.md` / 一次ソース `init_db.sql`）
+* DB設計（参照: `docs/DB設計仕様書.md` / 一次ソース `migrations/0001_init_db.sql`）
 * 特徴量生成・学習・推論（参照: `docs/特徴量仕様.md`）
 
 ---
@@ -83,7 +83,7 @@
 
 ### 4.2 DBスキーマ適用
 
-* DDL一次ソース: `init_db.sql`
+* DDL一次ソース: `migrations/0001_init_db.sql`（新規DBは `scripts/migrate.py` で `migrations/*.sql` を適用）
 * 本ETLは「テーブルが存在する」前提で動く。
 
 ### 4.3 実行コマンド（ETL）
@@ -200,7 +200,7 @@ uv run python scripts/load_to_db.py --input "data/DIFF_*.jsonl"
 
 ### 7.2 raw.jv_raw（注意）
 
-* `raw.jv_raw` は `(dataspec, rec_id, payload_hash)` のUNIQUE制約（`init_db.sql` の `uq_jv_raw_dedup`）で重複排除する設計。
+* `raw.jv_raw` は `(dataspec, rec_id, payload_hash)` のUNIQUE制約（`uq_jv_raw_dedup`）で重複排除する設計。
 * `scripts/load_to_db.py` は `payload_hash = sha256(payload)` を計算して INSERT するため、同一payloadの再投入は冪等になる。
 * 既存DBが古いDDLで作成されている場合は、制約の有無を確認してから投入すること。
 

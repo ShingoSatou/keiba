@@ -16,7 +16,34 @@ uv sync --extra wandb
 ### 1. データベース構築
 ```bash
 bash setup_postgres_multi.sh keiba_cp
+
+# DDL / migrations 適用（新規DBはこれでスキーマ作成まで完了）
+uv run python scripts/migrate.py
 ```
+
+#### Migrations 運用
+
+このリポジトリのDBスキーマは `migrations/*.sql` を正とし、`scripts/migrate.py` で適用します。
+
+```bash
+# 状態確認（適用済み/未適用）
+uv run python scripts/migrate.py --list
+
+# 新規DB: 未適用の migration を順に実行して適用
+uv run python scripts/migrate.py
+
+# 既存DB（すでに手動でDDL適用済み）:
+# SQLは実行せず、適用済みとして記録だけ開始（baseline）
+uv run python scripts/migrate.py --baseline
+
+# 途中まで適用したい場合（ファイル名で指定、含む）
+uv run python scripts/migrate.py --to 0002_init_mart.sql
+```
+
+運用ルール（最低限）:
+- 適用済みの migration（すでに本番/共有DBで実行済みの `.sql`）は編集しない（**追加のみ**）。
+- 適用順は「ファイル名の昇順」（例: `0001_...` → `0002_...` → `YYYYMMDD_...`）。
+- 適用履歴は `public.schema_migrations` に記録されます。
 
 ### 2. データ取得・ロード
 ```bash

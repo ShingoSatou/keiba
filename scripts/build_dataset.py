@@ -36,6 +36,54 @@ logger = logging.getLogger(__name__)
 
 DATA_DIR = PROJECT_ROOT / "data"
 
+CK_FEATURE_COLUMNS = [
+    "h_total_starts",
+    "h_total_wins",
+    "h_total_top3",
+    "h_total_top5",
+    "h_total_out",
+    "h_central_starts",
+    "h_central_wins",
+    "h_central_top3",
+    "h_turf_right_starts",
+    "h_turf_left_starts",
+    "h_turf_straight_starts",
+    "h_dirt_right_starts",
+    "h_dirt_left_starts",
+    "h_dirt_straight_starts",
+    "h_turf_good_starts",
+    "h_turf_soft_starts",
+    "h_turf_heavy_starts",
+    "h_turf_bad_starts",
+    "h_dirt_good_starts",
+    "h_dirt_soft_starts",
+    "h_dirt_heavy_starts",
+    "h_dirt_bad_starts",
+    "h_turf_16down_starts",
+    "h_turf_22down_starts",
+    "h_turf_22up_starts",
+    "h_dirt_16down_starts",
+    "h_dirt_22down_starts",
+    "h_dirt_22up_starts",
+    "h_style_nige_cnt",
+    "h_style_senko_cnt",
+    "h_style_sashi_cnt",
+    "h_style_oikomi_cnt",
+    "h_registered_races_n",
+    "j_year_flat_prize_total",
+    "j_year_ob_prize_total",
+    "j_cum_flat_prize_total",
+    "j_cum_ob_prize_total",
+    "t_year_flat_prize_total",
+    "t_year_ob_prize_total",
+    "t_cum_flat_prize_total",
+    "t_cum_ob_prize_total",
+    "o_year_prize_total",
+    "o_cum_prize_total",
+    "b_year_prize_total",
+    "b_cum_prize_total",
+]
+
 
 # =============================================================================
 # ユーティリティ関数
@@ -136,6 +184,15 @@ def build_dataset(
 
     # person_stats を結合
     base_df = _join_person_stats(db, base_df)
+
+    # MING(DM/TM) を結合
+    base_df = _join_mining_features(db, base_df)
+
+    # 調教特徴量を結合
+    base_df = _join_training_features(db, base_df, from_date=from_date, to_date=to_date)
+
+    # CK特徴量を結合
+    base_df = _join_ck_features(db, base_df)
 
     # レース内相対特徴量を計算
     base_df = _add_inrace_features(base_df)
@@ -281,6 +338,244 @@ def _join_person_stats(db: Database, df: pd.DataFrame) -> pd.DataFrame:
             how="left",
         )
         df = df.drop(columns=["calc_date"], errors="ignore")
+
+    return df
+
+
+def _join_mining_features(db: Database, df: pd.DataFrame) -> pd.DataFrame:
+    """MING(DM/TM) 特徴量を結合"""
+    logger.info("MING(DM/TM) を結合中...")
+
+    dm_df = pd.DataFrame(
+        db.fetch_all(
+            """
+            SELECT race_id, horse_no, data_kbn AS dm_data_kbn, dm_time_x10, dm_rank
+            FROM core.mining_dm
+            """
+        )
+    )
+    tm_df = pd.DataFrame(
+        db.fetch_all(
+            """
+            SELECT race_id, horse_no, data_kbn AS tm_data_kbn, tm_score, tm_rank
+            FROM core.mining_tm
+            """
+        )
+    )
+
+    if not dm_df.empty:
+        df = df.merge(dm_df, on=["race_id", "horse_no"], how="left")
+    else:
+        df["dm_data_kbn"] = None
+        df["dm_time_x10"] = None
+        df["dm_rank"] = None
+
+    if not tm_df.empty:
+        df = df.merge(tm_df, on=["race_id", "horse_no"], how="left")
+    else:
+        df["tm_data_kbn"] = None
+        df["tm_score"] = None
+        df["tm_rank"] = None
+
+    for col in ["dm_data_kbn", "dm_time_x10", "dm_rank", "tm_data_kbn", "tm_score", "tm_rank"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df["dm_pred_time_sec"] = df["dm_time_x10"] / 10.0
+    df["tm_score"] = df["tm_score"] / 10.0
+    df["dm_missing_flag"] = df["dm_pred_time_sec"].isna().astype(int)
+    df["tm_missing_flag"] = df["tm_score"].isna().astype(int)
+
+    return df
+
+
+def _join_training_features(
+    db: Database, df: pd.DataFrame, from_date: date | None = None, to_date: date | None = None
+) -> pd.DataFrame:
+    """調教(SLOP/WOOD) 特徴量を結合"""
+    logger.info("調教(SLOP/WOOD) 特徴量を結合中...")
+
+    where_clauses = [
+        "r.track_code BETWEEN 1 AND 10",
+        "run.scratch_flag = FALSE",
+        "res.finish_pos IS NOT NULL",
+    ]
+    params: list = []
+    if from_date:
+        where_clauses.append("r.race_date >= %s")
+        params.append(from_date)
+    if to_date:
+        where_clauses.append("r.race_date <= %s")
+        params.append(to_date)
+
+    where_sql = " AND ".join(where_clauses)
+    query = f"""
+    WITH base AS (
+        SELECT DISTINCT r.race_id, r.race_date, run.horse_id
+        FROM core.race r
+        JOIN core.runner run ON r.race_id = run.race_id
+        JOIN core.result res ON run.race_id = res.race_id AND run.horse_id = res.horse_id
+        WHERE {where_sql}
+    )
+    SELECT
+        b.race_id,
+        b.horse_id,
+        sl.total_4f AS slop_last_total_4f_sec,
+        sl.lap_4f AS slop_last_lap_4f_sec,
+        sl.lap_1f AS slop_last_lap_1f_sec,
+        CASE
+            WHEN sl.training_date IS NULL THEN NULL
+            ELSE (b.race_date - sl.training_date)
+        END AS slop_days_since_last,
+        COALESCE(sl28.slop_count_28d, 0) AS slop_count_28d,
+        wd.total_4f AS wood_last_total_4f_sec,
+        wd.lap_4f AS wood_last_lap_4f_sec,
+        wd.lap_1f AS wood_last_lap_1f_sec,
+        wd.course AS wood_course,
+        wd.direction AS wood_direction,
+        CASE
+            WHEN wd.training_date IS NULL THEN NULL
+            ELSE (b.race_date - wd.training_date)
+        END AS wood_days_since_last,
+        COALESCE(wd28.wood_count_28d, 0) AS wood_count_28d
+    FROM base b
+    LEFT JOIN LATERAL (
+        SELECT ts.training_date, ts.training_time, ts.total_4f, ts.lap_4f, ts.lap_1f
+        FROM core.training_slop ts
+        WHERE ts.horse_id = b.horse_id
+          AND ts.training_date <= b.race_date
+          AND ts.training_date >= (b.race_date - INTERVAL '60 days')::date
+        ORDER BY ts.training_date DESC, ts.training_time DESC NULLS LAST
+        LIMIT 1
+    ) sl ON TRUE
+    LEFT JOIN LATERAL (
+        SELECT COUNT(*)::INT AS slop_count_28d
+        FROM core.training_slop ts
+        WHERE ts.horse_id = b.horse_id
+          AND ts.training_date <= b.race_date
+          AND ts.training_date >= (b.race_date - INTERVAL '28 days')::date
+    ) sl28 ON TRUE
+    LEFT JOIN LATERAL (
+        SELECT
+            tw.training_date,
+            tw.training_time,
+            tw.total_4f,
+            tw.lap_4f,
+            tw.lap_1f,
+            tw.course,
+            tw.direction
+        FROM core.training_wood tw
+        WHERE tw.horse_id = b.horse_id
+          AND tw.training_date <= b.race_date
+          AND tw.training_date >= (b.race_date - INTERVAL '60 days')::date
+        ORDER BY tw.training_date DESC, tw.training_time DESC NULLS LAST
+        LIMIT 1
+    ) wd ON TRUE
+    LEFT JOIN LATERAL (
+        SELECT COUNT(*)::INT AS wood_count_28d
+        FROM core.training_wood tw
+        WHERE tw.horse_id = b.horse_id
+          AND tw.training_date <= b.race_date
+          AND tw.training_date >= (b.race_date - INTERVAL '28 days')::date
+    ) wd28 ON TRUE
+    """
+
+    training_df = pd.DataFrame(db.fetch_all(query, tuple(params) if params else None))
+    if training_df.empty:
+        df["slop_missing_flag"] = 1
+        df["wood_missing_flag"] = 1
+        return df
+
+    df = df.merge(training_df, on=["race_id", "horse_id"], how="left")
+    numeric_cols = [
+        "slop_last_total_4f_sec",
+        "slop_last_lap_4f_sec",
+        "slop_last_lap_1f_sec",
+        "slop_days_since_last",
+        "slop_count_28d",
+        "wood_last_total_4f_sec",
+        "wood_last_lap_4f_sec",
+        "wood_last_lap_1f_sec",
+        "wood_course",
+        "wood_direction",
+        "wood_days_since_last",
+        "wood_count_28d",
+    ]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df["slop_count_28d"] = df["slop_count_28d"].fillna(0).astype(int)
+    df["wood_count_28d"] = df["wood_count_28d"].fillna(0).astype(int)
+    df["slop_missing_flag"] = df["slop_last_total_4f_sec"].isna().astype(int)
+    df["wood_missing_flag"] = df["wood_last_total_4f_sec"].isna().astype(int)
+    return df
+
+
+def _join_ck_features(db: Database, df: pd.DataFrame) -> pd.DataFrame:
+    """CK特徴量を結合"""
+    logger.info("CK 特徴量を結合中...")
+
+    ck_columns_sql = ",\n        ".join(CK_FEATURE_COLUMNS)
+    query = f"""
+    WITH ck_with_race AS (
+        SELECT
+            (
+                (
+                    (kaisai_year::BIGINT * 10000)
+                    + kaisai_md::BIGINT
+                ) * 10000
+                + (track_cd::BIGINT * 100)
+                + race_no::BIGINT
+            ) AS race_id,
+            horse_id,
+            dataspec,
+            data_create_ymd,
+            {ck_columns_sql}
+        FROM mart.feat_ck_win
+    ),
+    ck_latest AS (
+        SELECT DISTINCT ON (race_id, horse_id)
+            race_id,
+            horse_id,
+            {ck_columns_sql}
+        FROM ck_with_race
+        ORDER BY
+            race_id,
+            horse_id,
+            CASE WHEN dataspec = 'SNPN' THEN 0 ELSE 1 END,
+            data_create_ymd DESC
+    )
+    SELECT * FROM ck_latest
+    """
+    ck_df = pd.DataFrame(db.fetch_all(query))
+
+    if ck_df.empty:
+        df["ck_missing_flag"] = 1
+        return df
+
+    for col in CK_FEATURE_COLUMNS:
+        ck_df[col] = pd.to_numeric(ck_df[col], errors="coerce")
+    ck_df = ck_df.rename(columns={col: f"ck_{col}" for col in CK_FEATURE_COLUMNS})
+
+    df = df.merge(ck_df, on=["race_id", "horse_id"], how="left")
+    df["ck_missing_flag"] = df["ck_h_total_starts"].isna().astype(int)
+
+    df["ck_overall_win_rate_sm"] = (
+        (df["ck_h_total_wins"] + 1) / (df["ck_h_total_starts"] + 10)
+    ).where(df["ck_h_total_starts"].notna())
+    df["ck_overall_top3_rate_sm"] = (
+        (df["ck_h_total_top3"] + 1) / (df["ck_h_total_starts"] + 10)
+    ).where(df["ck_h_total_starts"].notna())
+    df["ck_overall_top5_rate_sm"] = (
+        (df["ck_h_total_top5"] + 1) / (df["ck_h_total_starts"] + 10)
+    ).where(df["ck_h_total_starts"].notna())
+    df["ck_central_win_rate_sm"] = (
+        (df["ck_h_central_wins"] + 1) / (df["ck_h_central_starts"] + 10)
+    ).where(df["ck_h_central_starts"].notna())
+    df["ck_central_top3_rate_sm"] = (
+        (df["ck_h_central_top3"] + 1) / (df["ck_h_central_starts"] + 10)
+    ).where(df["ck_h_central_starts"].notna())
 
     return df
 
@@ -478,6 +773,38 @@ def main():
         "jockey_place_rate_1y",
         "trainer_win_rate_1y",
         "trainer_place_rate_1y",
+        # MING (DM/TM)
+        "dm_data_kbn",
+        "dm_pred_time_sec",
+        "dm_rank",
+        "dm_missing_flag",
+        "tm_data_kbn",
+        "tm_score",
+        "tm_rank",
+        "tm_missing_flag",
+        # 調教
+        "slop_last_total_4f_sec",
+        "slop_last_lap_4f_sec",
+        "slop_last_lap_1f_sec",
+        "slop_days_since_last",
+        "slop_count_28d",
+        "slop_missing_flag",
+        "wood_last_total_4f_sec",
+        "wood_last_lap_4f_sec",
+        "wood_last_lap_1f_sec",
+        "wood_course",
+        "wood_direction",
+        "wood_days_since_last",
+        "wood_count_28d",
+        "wood_missing_flag",
+        # CK
+        *[f"ck_{col}" for col in CK_FEATURE_COLUMNS],
+        "ck_missing_flag",
+        "ck_overall_win_rate_sm",
+        "ck_overall_top3_rate_sm",
+        "ck_overall_top5_rate_sm",
+        "ck_central_win_rate_sm",
+        "ck_central_top3_rate_sm",
         # 目的変数
         "is_win",
         "finish_pos",

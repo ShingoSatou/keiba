@@ -100,6 +100,79 @@ FEATURE_COLS = [
     "jockey_place_rate_1y",
     "trainer_win_rate_1y",
     "trainer_place_rate_1y",
+    "dm_data_kbn",
+    "dm_pred_time_sec",
+    "dm_rank",
+    "dm_missing_flag",
+    "tm_data_kbn",
+    "tm_score",
+    "tm_rank",
+    "tm_missing_flag",
+    "slop_last_total_4f_sec",
+    "slop_last_lap_4f_sec",
+    "slop_last_lap_1f_sec",
+    "slop_days_since_last",
+    "slop_count_28d",
+    "slop_missing_flag",
+    "wood_last_total_4f_sec",
+    "wood_last_lap_4f_sec",
+    "wood_last_lap_1f_sec",
+    "wood_course",
+    "wood_direction",
+    "wood_days_since_last",
+    "wood_count_28d",
+    "wood_missing_flag",
+    "ck_h_total_starts",
+    "ck_h_total_wins",
+    "ck_h_total_top3",
+    "ck_h_total_top5",
+    "ck_h_total_out",
+    "ck_h_central_starts",
+    "ck_h_central_wins",
+    "ck_h_central_top3",
+    "ck_h_turf_right_starts",
+    "ck_h_turf_left_starts",
+    "ck_h_turf_straight_starts",
+    "ck_h_dirt_right_starts",
+    "ck_h_dirt_left_starts",
+    "ck_h_dirt_straight_starts",
+    "ck_h_turf_good_starts",
+    "ck_h_turf_soft_starts",
+    "ck_h_turf_heavy_starts",
+    "ck_h_turf_bad_starts",
+    "ck_h_dirt_good_starts",
+    "ck_h_dirt_soft_starts",
+    "ck_h_dirt_heavy_starts",
+    "ck_h_dirt_bad_starts",
+    "ck_h_turf_16down_starts",
+    "ck_h_turf_22down_starts",
+    "ck_h_turf_22up_starts",
+    "ck_h_dirt_16down_starts",
+    "ck_h_dirt_22down_starts",
+    "ck_h_dirt_22up_starts",
+    "ck_h_style_nige_cnt",
+    "ck_h_style_senko_cnt",
+    "ck_h_style_sashi_cnt",
+    "ck_h_style_oikomi_cnt",
+    "ck_h_registered_races_n",
+    "ck_j_year_flat_prize_total",
+    "ck_j_year_ob_prize_total",
+    "ck_j_cum_flat_prize_total",
+    "ck_j_cum_ob_prize_total",
+    "ck_t_year_flat_prize_total",
+    "ck_t_year_ob_prize_total",
+    "ck_t_cum_flat_prize_total",
+    "ck_t_cum_ob_prize_total",
+    "ck_o_year_prize_total",
+    "ck_o_cum_prize_total",
+    "ck_b_year_prize_total",
+    "ck_b_cum_prize_total",
+    "ck_missing_flag",
+    "ck_overall_win_rate_sm",
+    "ck_overall_top3_rate_sm",
+    "ck_overall_top5_rate_sm",
+    "ck_central_win_rate_sm",
+    "ck_central_top3_rate_sm",
 ]
 
 
@@ -385,9 +458,11 @@ def predict_race(
     # 特徴量取得
     df = get_race_features(db, race_id)
 
-    # 存在する特徴量のみ使用
-    available_features = [c for c in feature_names if c in df.columns]
-    X = df[available_features]
+    # 学習時のfeature_namesに合わせて列順を固定（不足列はNaNで補完）
+    missing_features = [c for c in feature_names if c not in df.columns]
+    if missing_features:
+        logger.warning(f"推論時に欠損している特徴量: {missing_features}")
+    X = df.reindex(columns=feature_names)
 
     # 予測
     _ = model.predict(X)  # raw_probaは未使用
