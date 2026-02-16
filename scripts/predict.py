@@ -52,6 +52,75 @@ MODEL_DIR = PROJECT_ROOT / "models"
 
 
 # =============================================================================
+# Pickle互換クラス
+# =============================================================================
+
+
+class LGBMClassifierWrapper:
+    """旧pickle互換: __main__.LGBMClassifierWrapper を復元するための最小クラス。"""
+
+    def __init__(self, params: dict | None = None, num_boost_round: int = 1000):
+        self.params = params or {}
+        self.num_boost_round = num_boost_round
+        self.model = None
+        self.feature_names: list[str] = []
+        self.classes_ = [0, 1]
+
+    def predict(self, X):
+        return self.model.predict(X)
+
+    def predict_proba(self, X):
+        import numpy as np
+
+        preds = self.model.predict(X)
+        return np.column_stack([1 - preds, preds])
+
+
+class _CompatUnpickler(pickle.Unpickler):
+    """古い __main__ 参照pickleを読み込むための互換Unpickler。"""
+
+    def find_class(self, module: str, name: str):
+        if module == "__main__" and name == "LGBMClassifierWrapper":
+            return LGBMClassifierWrapper
+        return super().find_class(module, name)
+
+
+def _load_pickle_with_compat(path: Path):
+    """pickleロード。互換クラス不足時は __main__ 参照を補正して再読込する。"""
+    try:
+        with open(path, "rb") as f:
+            return pickle.load(f)
+    except AttributeError as exc:
+        if "LGBMClassifierWrapper" not in str(exc):
+            raise
+        logger.warning(
+            "pickle互換ロードを実行: %s (__main__.LGBMClassifierWrapper を補正)",
+            path,
+        )
+        with open(path, "rb") as f:
+            return _CompatUnpickler(f).load()
+
+
+def predict_with_optional_calibrator(model, calibrator, matrix):
+    """確率予測を返す。calibratorが無ければmodel出力をそのまま利用する。"""
+    if calibrator is not None:
+        return calibrator.predict_proba(matrix)[:, 1]
+    if hasattr(model, "predict_proba"):
+        return model.predict_proba(matrix)[:, 1]
+    return model.predict(matrix)
+
+
+def coerce_model_matrix(df: pd.DataFrame, feature_names: list[str]) -> pd.DataFrame:
+    """推論入力を学習時feature順に揃え、数値列へ正規化する。"""
+    matrix = df.reindex(columns=feature_names).copy()
+    for column in matrix.columns:
+        if pd.api.types.is_numeric_dtype(matrix[column]):
+            continue
+        matrix[column] = pd.to_numeric(matrix[column], errors="coerce")
+    return matrix
+
+
+# =============================================================================
 # 特徴量定義 (train.py と同じ)
 # =============================================================================
 
@@ -223,11 +292,13 @@ def load_model():
         logger.error("先に train.py を実行してください")
         sys.exit(1)
 
-    with open(model_path, "rb") as f:
-        model_data = pickle.load(f)
+    model_data = _load_pickle_with_compat(model_path)
 
-    with open(calibrator_path, "rb") as f:
-        calibrator = pickle.load(f)
+    calibrator = None
+    if calibrator_path.exists():
+        calibrator = _load_pickle_with_compat(calibrator_path)
+    else:
+        logger.warning("校正器が見つかりません。モデル生確率で推論します: %s", calibrator_path)
 
     return model_data["model"], calibrator, model_data["feature_names"]
 
@@ -375,13 +446,15 @@ def _add_inrace_features(df: pd.DataFrame) -> pd.DataFrame:
         if col not in df.columns:
             continue
 
-        race_mean = df[col].mean()
-        race_std = df[col].std()
+        # psycopg may return Decimal for NUMERIC; coerce to float for stable stats.
+        values = pd.to_numeric(df[col], errors="coerce").astype(float)
+        race_mean = float(values.mean())
+        race_std = float(values.std())
         if race_std == 0 or pd.isna(race_std):
             race_std = 1
 
-        df[f"{col}_z_inrace"] = (df[col] - race_mean) / race_std
-        df[f"{col}_rank"] = df[col].rank(ascending=False, method="min")
+        df[f"{col}_z_inrace"] = (values - race_mean) / race_std
+        df[f"{col}_rank"] = values.rank(ascending=False, method="min")
 
     return df
 
@@ -428,11 +501,15 @@ def _add_condition_features(db: Database, df: pd.DataFrame, race_date) -> pd.Dat
         df["distance_change_m"] = None
         return df
 
-    prev_df["days_since_last"] = (race_date - prev_df["prev_race_date"]).dt.days
+    prev_df["prev_race_date"] = pd.to_datetime(prev_df["prev_race_date"], errors="coerce")
+    race_ts = pd.to_datetime(race_date)
+    prev_df["days_since_last"] = (race_ts - prev_df["prev_race_date"]).dt.days
 
     df = df.merge(
         prev_df[["horse_id", "days_since_last", "prev_distance_m"]], on="horse_id", how="left"
     )
+    df["distance_m"] = pd.to_numeric(df["distance_m"], errors="coerce")
+    df["prev_distance_m"] = pd.to_numeric(df["prev_distance_m"], errors="coerce")
     df["distance_change_m"] = df["distance_m"] - df["prev_distance_m"].fillna(df["distance_m"])
     df = df.drop(columns=["prev_distance_m"], errors="ignore")
 
@@ -462,11 +539,11 @@ def predict_race(
     missing_features = [c for c in feature_names if c not in df.columns]
     if missing_features:
         logger.warning(f"推論時に欠損している特徴量: {missing_features}")
-    X = df.reindex(columns=feature_names)
+    X = coerce_model_matrix(df, feature_names)
 
     # 予測
     _ = model.predict(X)  # raw_probaは未使用
-    calibrated_proba = calibrator.predict_proba(X)[:, 1]
+    calibrated_proba = predict_with_optional_calibrator(model, calibrator, X)
 
     df["p_win"] = calibrated_proba
 

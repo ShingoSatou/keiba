@@ -29,9 +29,11 @@ from scripts.predict import (
     _add_pace_features,
     _join_horse_stats,
     _join_person_stats,
+    coerce_model_matrix,
     distance_to_bucket,
     going_to_bucket,
     load_model,
+    predict_with_optional_calibrator,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -419,9 +421,9 @@ def _predict_and_score(
         logger.warning("推論時に欠損している特徴量: %s", missing_features)
 
     prediction_frame = frame.copy()
-    matrix = prediction_frame.reindex(columns=feature_names)
+    matrix = coerce_model_matrix(prediction_frame, feature_names)
     _ = model.predict(matrix)
-    prediction_frame["p"] = calibrator.predict_proba(matrix)[:, 1]
+    prediction_frame["p"] = predict_with_optional_calibrator(model, calibrator, matrix)
 
     prediction_frame["odds_stale_flag"] = (
         pd.to_numeric(prediction_frame["odds_snapshot_age_sec"], errors="coerce")

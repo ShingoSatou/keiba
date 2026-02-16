@@ -54,7 +54,7 @@ def ensure_32bit():
 
     bits = struct.calcsize("P") * 8
     if bits != 32:
-        print(f"❌ エラー: 32bit Python が必要です (現在: {bits}bit)")
+        print(f"[ERR] 32bit Python が必要です (現在: {bits}bit)")
         print("   .venv32\\Scripts\\python.exe を使用してください")
         sys.exit(1)
 
@@ -67,7 +67,7 @@ def get_jvlink():
     ret = jv.JVInit("UNKNOWN")
     if ret not in (0, -102):  # 0=成功, -102=初期化済み
         raise RuntimeError(f"JVInit failed: {ret}")
-    print(f"✅ JVInit: 成功 (戻り値={ret})")
+    print(f"[OK] JVInit: success (ret={ret})")
     return jv
 
 
@@ -78,7 +78,7 @@ def jv_rt_open_with_logging(jv, dataspec: str, key: str):
     Returns:
         rc_open: 戻り値
     """
-    print("\n📡 JVRTOpen 呼び出し:")
+    print("\n[INFO] JVRTOpen:")
     print(f"   dataspec = {dataspec}")
     print(f"   key      = {key}")
 
@@ -86,7 +86,7 @@ def jv_rt_open_with_logging(jv, dataspec: str, key: str):
     try:
         ret = jv.JVRTOpen(dataspec, key)
     except Exception as e:
-        print(f"\n❌ JVRTOpen 例外発生: {e}")
+        print(f"\n[ERR] JVRTOpen exception: {e}")
         traceback.print_exc()
         return -999
 
@@ -121,11 +121,11 @@ def jv_rt_open_with_logging(jv, dataspec: str, key: str):
             -503: "ファイルがない（データ未提供または保持期間外）",
             -504: "サーバーメンテナンス中",
         }
-        print(f"\n❌ エラー: {error_messages.get(rc_open, f'不明なエラー ({rc_open})')}")
+        print(f"\n[ERR] {error_messages.get(rc_open, f'不明なエラー ({rc_open})')}")
         return rc_open
 
     # 0 = 成功（データの有無は JVRead で確認）
-    print("\n✅ JVRTOpen 成功")
+    print("\n[OK] JVRTOpen success")
     return rc_open
 
 
@@ -147,7 +147,7 @@ def extract_records(jv, max_records: int = 0):
         try:
             ret = jv.JVRead("", 110000, "")
         except Exception as e:
-            print(f"\n❌ JVRead 例外発生: {e}")
+            print(f"\n[ERR] JVRead exception: {e}")
             traceback.print_exc()
             break
 
@@ -185,11 +185,11 @@ def extract_records(jv, max_records: int = 0):
             continue
         elif res == -3:
             # ダウンロード中 - 待機
-            print("   ⏳ ダウンロード待機中...")
+            print("   [INFO] waiting download...")
             time.sleep(1)
             continue
         else:
-            print(f"\n❌ JVRead エラー: {res}")
+            print(f"\n[ERR] JVRead error: {res}")
             break
 
     jv.JVClose()
@@ -258,7 +258,7 @@ def main():
 
     # 環境チェック
     if sys.platform != "win32":
-        print("❌ エラー: Windows環境が必要です")
+        print("[ERR] Windows環境が必要です")
         sys.exit(1)
 
     ensure_32bit()
@@ -304,37 +304,37 @@ def main():
 
             if res > 0:
                 rec_id = buff[:2] if len(buff) >= 2 else "??"
-                print(f"✅ データあり: 最初のレコード種別={rec_id}, サイズ={res}")
+                print(f"[OK] data available: first rec_id={rec_id}, size={res}")
                 print("   (これ以上の読み込みはスキップ)")
             elif res == 0:
-                print("⚠️  データなし (EOF)")
+                print("[WARN] データなし (EOF)")
                 print("   考えられる原因:")
                 print("   1. 指定したレースキーにデータが存在しない")
                 print("   2. データ保持期間（1年）を超えている")
             elif res == -1:
-                print("⚠️  ファイル切り替わり (データなしの可能性)")
+                print("[WARN] ファイル切り替わり (データなしの可能性)")
             elif res == -3:
-                print("⏳ ダウンロード中...")
+                print("[INFO] downloading...")
             else:
-                print(f"❌ JVRead エラー: {res}")
+                print(f"[ERR] JVRead error: {res}")
         except Exception as e:
-            print(f"❌ JVRead 例外: {e}")
+            print(f"[ERR] JVRead exception: {e}")
         jv.JVClose()
         return
 
     # 出力ファイル名
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = args.output_dir / f"{args.dataspec}_{key}_{timestamp}.jsonl"
-    print(f"\n📁 出力先: {output_file}")
+    print(f"\n[INFO] output: {output_file}")
 
     # 抽出＆保存
-    print("\n📖 データ読み込み開始...")
+    print("\n[INFO] JVRead start...")
     records = extract_records(jv, args.max_records)
     count = save_jsonl(records, output_file)
 
     print("")
     print("=" * 60)
-    print(f"✅ 完了: {count} 件を {output_file.name} に保存")
+    print(f"[OK] saved: {count} records -> {output_file.name}")
     print("=" * 60)
 
 

@@ -52,12 +52,18 @@ dataspec一覧:
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import sys
 import time
 import traceback
 from datetime import datetime
 from pathlib import Path
+
+# Windows cp932 環境で Unicode 出力が落ちるケースの回避（WSL interop経由でも安全側に倒す）
+if sys.platform == "win32" and hasattr(sys.stdout, "buffer"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 # プロジェクトルート設定
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -79,7 +85,7 @@ def ensure_32bit():
 
     bits = struct.calcsize("P") * 8
     if bits != 32:
-        print(f"❌ エラー: 32bit Python が必要です (現在: {bits}bit)")
+        print(f"[ERR] 32bit Python が必要です (現在: {bits}bit)")
         print("   .venv32\\Scripts\\python.exe を使用してください")
         sys.exit(1)
 
@@ -92,7 +98,7 @@ def get_jvlink():
     ret = jv.JVInit("UNKNOWN")
     if ret not in (0, -102):  # 0=成功, -102=初期化済み
         raise RuntimeError(f"JVInit failed: {ret}")
-    print(f"✅ JVInit: 成功 (戻り値={ret})")
+    print(f"[OK] JVInit success (ret={ret})")
     return jv
 
 
@@ -103,7 +109,7 @@ def jv_open_with_logging(jv, dataspec: str, from_date: str, option: int):
     Returns:
         (rc_open, readcount, downloadcount, lastfiletimestamp)
     """
-    print("\n📡 JVOpen 呼び出し:")
+    print("\n[INFO] JVOpen:")
     print(f"   dataspec  = {dataspec}")
     print(f"   fromtime  = {from_date}")
     print(f"   option    = {option}")
@@ -125,7 +131,7 @@ def jv_open_with_logging(jv, dataspec: str, from_date: str, option: int):
         downloadcount = 0
         lastfiletimestamp = ""
 
-    print("\n📊 JVOpen 戻り値:")
+    print("\n[INFO] JVOpen result:")
     print(f"   rc_open           = {rc_open}")
     print(f"   readcount         = {readcount}")
     print(f"   downloadcount     = {downloadcount}")
@@ -151,24 +157,24 @@ def jv_open_with_logging(jv, dataspec: str, from_date: str, option: int):
             -301: "利用キーが無効、または複数PCで同時使用",
             -503: "ファイルがない",
         }
-        print(f"\n❌ エラー: {error_messages.get(rc_open, '不明なエラー')}")
+        print(f"\n[ERR] {error_messages.get(rc_open, 'unknown error')}")
         return (rc_open, readcount, downloadcount, lastfiletimestamp)
 
     # rc_open=0 でも downloadcount>0 ならダウンロード待ちデータあり
     if rc_open == 0 and downloadcount == 0 and readcount == 0:
-        print("\n⚠️  データなし (rc_open=0, downloadcount=0)")
+        print("\n[WARN] no data (rc_open=0, downloadcount=0)")
         print("   考えられる原因:")
-        print("   1. option=1 は過去1年分のみ → option=4 でセットアップが必要")
+        print("   1. option=1 は過去1年分のみ -> option=4 でセットアップが必要")
         print("   2. 指定した fromtime 以降のデータが存在しない")
         print("   3. dataspec と option の組合せが不正")
         return (rc_open, readcount, downloadcount, lastfiletimestamp)
 
     # データあり
     if downloadcount > 0:
-        print(f"\n📥 ダウンロード待ち: {downloadcount} ファイル")
-        print("   → JVStatus でダウンロード完了を待機します")
+        print(f"\n[INFO] download pending: {downloadcount} files")
+        print("   -> JVStatus でダウンロード完了を待機します")
     if readcount > 0 or rc_open > 0:
-        print(f"\n✅ データあり: readcount={readcount}, rc_open={rc_open}")
+        print(f"\n[OK] data available: readcount={readcount}, rc_open={rc_open}")
 
     return (rc_open, readcount, downloadcount, lastfiletimestamp)
 
@@ -185,14 +191,14 @@ def wait_for_download(jv, downloadcount: int, timeout_sec: int = 3600):
     Returns:
         True if download completed, False if timeout
     """
-    print(f"\n⏳ ダウンロード完了待機中... (対象: {downloadcount} ファイル)")
+    print(f"\n[INFO] waiting download... (target: {downloadcount} files)")
     start_time = time.time()
     check_count = 0
 
     while True:
         elapsed = time.time() - start_time
         if elapsed > timeout_sec:
-            print(f"\n❌ タイムアウト ({timeout_sec}秒)")
+            print(f"\n[ERR] timeout ({timeout_sec}s)")
             return False
 
         # JVStatus でダウンロード状況を確認
@@ -211,22 +217,18 @@ def wait_for_download(jv, downloadcount: int, timeout_sec: int = 3600):
         # 負数 = エラー
 
         if downloaded < 0:
-            print(f"\n❌ JVStatus エラー: {downloaded}")
+            print(f"\n[ERR] JVStatus error: {downloaded}")
             return False
 
         if downloaded >= downloadcount:
-            print(f"\n✅ ダウンロード完了 ({downloaded}/{downloadcount})")
+            print(f"\n[OK] download completed ({downloaded}/{downloadcount})")
             return True
 
         # 進行中
         mins = int(elapsed // 60)
         secs = int(elapsed % 60)
         pct = int(downloaded * 100 / downloadcount) if downloadcount > 0 else 0
-        print(
-            f"   ダウンロード中... {downloaded}/{downloadcount} ({pct}%) "
-            f"[{mins}分{secs}秒経過]    ",
-            end="\r",
-        )
+        print(f"   downloading... {downloaded}/{downloadcount} ({pct}%) [{mins}m{secs}s]", end="\r")
         time.sleep(3)
 
 
@@ -260,7 +262,7 @@ def extract_records(
             # 110000 は公式サンプルのバッファサイズ
             ret = jv.JVRead("", 110000, "")
         except Exception as e:
-            print(f"\n❌ JVRead 例外発生: {e}")
+            print(f"\n[ERR] JVRead exception: {e}")
             traceback.print_exc()
             break
 
@@ -317,19 +319,19 @@ def extract_records(
             extract_records._download_waits = download_waits
 
             if download_waits == 1:
-                print("\n   ⏳ ダウンロード待機中 (JVRead=-3)...")
+                print("\n   [INFO] waiting download (JVRead=-3)...")
             elif download_waits % 10 == 0:
-                print(f"   ⏳ ダウンロード待機中... ({download_waits * 3}秒経過)")
+                print(f"   [INFO] waiting download... ({download_waits * 3}s elapsed)")
 
             # 長時間待機の場合はタイムアウト
             if download_waits > 600:  # 30分
-                print("\n❌ ダウンロードタイムアウト (30分)")
+                print("\n[ERR] download timeout (30min)")
                 break
 
             time.sleep(3)
             continue
         else:
-            print(f"\n❌ JVRead エラー: {res}")
+            print(f"\n[ERR] JVRead error: {res}")
             break
 
     jv.JVClose()
@@ -419,7 +421,7 @@ Option説明:
 
     # 環境チェック
     if sys.platform != "win32":
-        print("❌ エラー: Windows環境が必要です")
+        print("[ERR] Windows environment is required")
         sys.exit(1)
 
     ensure_32bit()
@@ -456,7 +458,7 @@ Option説明:
         sys.exit(1)
 
     if rc_open == 0 and downloadcount == 0 and readcount == 0:
-        print("\n→ 取得対象データがありません")
+        print("\n-> 取得対象データがありません")
         jv.JVClose()
         sys.exit(0)
 
@@ -480,10 +482,10 @@ Option説明:
         output_file = args.output_dir / fname
     else:
         output_file = args.output_dir / f"{args.dataspec}_{timestamp}.jsonl"
-    print(f"\n📁 出力先: {output_file}")
+    print(f"\n[INFO] output: {output_file}")
 
     # 抽出＆保存
-    print("\n📖 データ読み込み開始...")
+    print("\n[INFO] JVRead start...")
     if args.record_filter:
         print(f"   フィルタ: rec_id={args.record_filter}")
     if args.to_date:
@@ -493,7 +495,7 @@ Option説明:
 
     print("")
     print("=" * 60)
-    print(f"✅ 完了: {count} 件を {output_file.name} に保存")
+    print(f"[OK] saved: {count} records -> {output_file.name}")
     print("=" * 60)
     print("")
     print("次のステップ:")
