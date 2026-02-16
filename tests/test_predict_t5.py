@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 
 import numpy as np
 import pandas as pd
@@ -11,6 +12,32 @@ from scripts import predict_t5
 class _DummyModel:
     def predict(self, matrix):
         return [0 for _ in range(len(matrix))]
+
+
+class _DummyModelWithProba:
+    def predict(self, matrix):
+        return [0 for _ in range(len(matrix))]
+
+    def predict_proba(self, matrix):
+        probs = []
+        for value in matrix["f1"]:
+            p = float(value)
+            probs.append([1 - p, p])
+        return np.array(probs)
+
+
+class _StrictNumericModel:
+    def predict(self, matrix):
+        assert pd.api.types.is_numeric_dtype(matrix["f1"])
+        return [0 for _ in range(len(matrix))]
+
+    def predict_proba(self, matrix):
+        assert pd.api.types.is_numeric_dtype(matrix["f1"])
+        probs = []
+        for value in matrix["f1"]:
+            p = float(value)
+            probs.append([1 - p, p])
+        return np.array(probs)
 
 
 class _DummyCalibrator:
@@ -81,6 +108,61 @@ def test_predict_and_score_skips_missing_and_stale(monkeypatch):
     assert result.loc[2, "odds_stale_flag"] == 0
     assert result.loc[2, "recommendation"] == "buy"
     assert result.loc[2, "bet_amount"] == 500
+
+
+def test_predict_and_score_works_without_calibrator(monkeypatch):
+    monkeypatch.setattr(
+        predict_t5,
+        "load_model",
+        lambda: (_DummyModelWithProba(), None, ["f1"]),
+    )
+    frame = pd.DataFrame(
+        [
+            {
+                "f1": 0.7,
+                "odds_win_t5": 4.0,
+                "odds_snapshot_age_sec": 10,
+                "odds_missing_flag": False,
+            }
+        ]
+    )
+    result = predict_t5._predict_and_score(
+        frame=frame,
+        odds_stale_sec=900,
+        slippage=0.15,
+        min_prob=0.03,
+        bet_amount=500,
+    )
+
+    assert result.loc[0, "p"] == 0.7
+    assert result.loc[0, "odds_stale_flag"] == 0
+
+
+def test_predict_and_score_coerces_object_dtype_for_model(monkeypatch):
+    monkeypatch.setattr(
+        predict_t5,
+        "load_model",
+        lambda: (_StrictNumericModel(), None, ["f1"]),
+    )
+    frame = pd.DataFrame(
+        [
+            {
+                "f1": Decimal("0.7"),
+                "odds_win_t5": 4.0,
+                "odds_snapshot_age_sec": 10,
+                "odds_missing_flag": False,
+            }
+        ]
+    )
+    result = predict_t5._predict_and_score(
+        frame=frame,
+        odds_stale_sec=900,
+        slippage=0.15,
+        min_prob=0.03,
+        bet_amount=500,
+    )
+
+    assert result.loc[0, "p"] == 0.7
 
 
 def test_merge_rt_mining_features_uses_snapshot_keys():

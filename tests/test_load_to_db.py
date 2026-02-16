@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -300,3 +301,64 @@ def test_upsert_race_updates_stub_surface_and_distance():
     assert "distance_m = CASE" in db.sql
     assert db.params["surface"] == 1
     assert db.params["distance_m"] == 1600
+
+
+def test_upsert_wh_records_ensures_race_stub(monkeypatch):
+    called = {"race_id": None}
+
+    class _CaptureDB:
+        def execute(self, sql, params):
+            _ = sql
+            _ = params
+
+    monkeypatch.setattr(
+        load_to_db,
+        "ensure_race_stub",
+        lambda db, race_id, cache=None: called.__setitem__("race_id", race_id),
+    )
+
+    record = SimpleNamespace(
+        race_id=202602030501,
+        data_kbn=1,
+        announce_mmddhhmi="02031230",
+        horse_no=1,
+        body_weight_kg=480,
+        diff_sign="+",
+        diff_kg=2,
+    )
+    inserted = load_to_db.upsert_wh_records(_CaptureDB(), [record])
+
+    assert inserted == 1
+    assert called["race_id"] == 202602030501
+
+
+def test_insert_event_change_includes_payload_md5_and_data_kbn():
+    class _CaptureDB:
+        def __init__(self):
+            self.sql = ""
+            self.params = {}
+
+        def execute(self, sql, params):
+            self.sql = sql
+            self.params = params
+
+    db = _CaptureDB()
+    record = SimpleNamespace(
+        race_id=202602030501,
+        record_type="JC",
+        data_kbn=2,
+        data_create_ymd="20260203",
+        announce_mmddhhmi="02031235",
+        payload_parsed={"horse_no": 3},
+        payload_raw="raw-payload",
+    )
+
+    load_to_db.insert_event_change(db, record)
+
+    assert "payload_md5" in db.sql
+    assert "ON CONFLICT" in db.sql
+    payload = json.loads(db.params["payload"])
+    assert payload["data_kbn"] == 2
+    assert payload["raw"] == "raw-payload"
+    expected_md5 = hashlib.md5(b"raw-payload").hexdigest()
+    assert db.params["payload_md5"] == expected_md5

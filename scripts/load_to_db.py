@@ -918,6 +918,7 @@ def upsert_wh_records(db: Database, records: list[WHRecord]) -> int:
         return 0
 
     first = records[0]
+    ensure_race_stub(db, first.race_id)
     header_sql = """
         INSERT INTO core.wh_header (race_id, data_kbn, announce_mmddhhmi)
         VALUES (%(race_id)s, %(data_kbn)s, %(announce_mmddhhmi)s)
@@ -1147,16 +1148,24 @@ def insert_event_change(db: Database, record: EventChangeRecord) -> None:
     ensure_race_stub(db, record.race_id)
     sql = """
         INSERT INTO core.event_change (
-            race_id, record_type, data_create_ymd, announce_mmddhhmi, payload_parsed
+            race_id, record_type, data_create_ymd, announce_mmddhhmi, payload_parsed, payload_md5
         )
         VALUES (
-            %(race_id)s, %(record_type)s, %(data_create_ymd)s, %(announce_mmddhhmi)s, %(payload)s
+            %(race_id)s, %(record_type)s, %(data_create_ymd)s, %(announce_mmddhhmi)s,
+            %(payload)s, %(payload_md5)s
         )
+        ON CONFLICT (race_id, record_type, data_create_ymd, announce_mmddhhmi, payload_md5)
+        DO NOTHING
     """
     import json as _json
 
     payload = dict(record.payload_parsed or {})
+    payload.setdefault("data_kbn", record.data_kbn)
     payload.setdefault("raw", record.payload_raw)
+    payload_raw_text = payload.get("raw")
+    if payload_raw_text is None:
+        payload_raw_text = ""
+    payload_md5 = hashlib.md5(str(payload_raw_text).encode("utf-8", errors="replace")).hexdigest()
 
     db.execute(
         sql,
@@ -1166,6 +1175,7 @@ def insert_event_change(db: Database, record: EventChangeRecord) -> None:
             "data_create_ymd": record.data_create_ymd,
             "announce_mmddhhmi": record.announce_mmddhhmi,
             "payload": _json.dumps(payload, ensure_ascii=False),
+            "payload_md5": payload_md5,
         },
     )
 
