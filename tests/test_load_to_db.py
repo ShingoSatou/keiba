@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from app.infrastructure.parsers import OddsRecord
+from app.infrastructure.parsers import OddsRecord, OddsTimeSeriesRecord
 from scripts import load_to_db
 
 
@@ -362,3 +362,35 @@ def test_insert_event_change_includes_payload_md5_and_data_kbn():
     assert payload["raw"] == "raw-payload"
     expected_md5 = hashlib.md5(b"raw-payload").hexdigest()
     assert db.params["payload_md5"] == expected_md5
+
+
+def test_upsert_o1_timeseries_bulk_allows_null_win_odds(monkeypatch):
+    captured = {"detail_rows": None}
+
+    class _CaptureDB:
+        def execute_many(self, sql, params):
+            _ = sql
+            _ = params
+
+        def execute(self, sql, params):
+            if "jsonb_to_recordset" in sql:
+                captured["detail_rows"] = json.loads(params["rows_json"])
+
+    monkeypatch.setattr(load_to_db, "ensure_race_stub", lambda db, race_id, cache=None: None)
+
+    records = [
+        OddsTimeSeriesRecord(
+            race_id=202602080101,
+            data_kbn=1,
+            announce_mmddhhmi="02080512",
+            horse_no=1,
+            win_odds_x10=None,
+            win_popularity=1,
+            win_pool_total_100yen=123456,
+        )
+    ]
+    inserted = load_to_db.upsert_o1_timeseries_bulk(_CaptureDB(), records)
+
+    assert inserted == 1
+    assert captured["detail_rows"] is not None
+    assert captured["detail_rows"][0]["win_odds_x10"] is None

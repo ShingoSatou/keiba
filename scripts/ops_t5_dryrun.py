@@ -272,6 +272,32 @@ def _log_day_data_health(race_date_iso: str, feature_set: str, label: str) -> di
             """,
             params,
         )
+        snapshot_odds_missing_rows = _fetch_count(
+            db,
+            """
+            SELECT COUNT(*) AS n
+            FROM mart.t5_runner_snapshot
+            WHERE race_date = %(race_date)s
+              AND feature_set = %(feature_set)s
+              AND COALESCE(odds_missing_flag, FALSE)
+            """,
+            params,
+        )
+        snapshot_odds_missing_races = _fetch_count(
+            db,
+            """
+            SELECT COUNT(*) AS n
+            FROM (
+                SELECT race_id, asof_ts
+                FROM mart.t5_runner_snapshot
+                WHERE race_date = %(race_date)s
+                  AND feature_set = %(feature_set)s
+                GROUP BY race_id, asof_ts
+                HAVING BOOL_AND(COALESCE(odds_missing_flag, FALSE))
+            ) z
+            """,
+            params,
+        )
 
     health = {
         "races": races,
@@ -284,12 +310,14 @@ def _log_day_data_health(race_date_iso: str, feature_set: str, label: str) -> di
         "rt_dm_rows": rt_dm_rows,
         "rt_tm_rows": rt_tm_rows,
         "t5_snapshot_rows": snapshot_rows,
+        "snapshot_odds_missing_rows": snapshot_odds_missing_rows,
+        "snapshot_odds_missing_races": snapshot_odds_missing_races,
     }
     logger.info(
         (
             "day health[%s]: races=%s runners=%s missing_start_time=%s race_stub=%s "
             "o1_rows=%s wh_rows=%s event_rows=%s rt_dm_rows=%s rt_tm_rows=%s "
-            "t5_snapshot_rows=%s"
+            "t5_snapshot_rows=%s odds_missing_rows=%s odds_missing_races=%s"
         ),
         label,
         health["races"],
@@ -302,6 +330,8 @@ def _log_day_data_health(race_date_iso: str, feature_set: str, label: str) -> di
         health["rt_dm_rows"],
         health["rt_tm_rows"],
         health["t5_snapshot_rows"],
+        health["snapshot_odds_missing_rows"],
+        health["snapshot_odds_missing_races"],
     )
     return health
 
@@ -482,6 +512,7 @@ def _export_snapshot(
 def _evaluate_health(
     health: dict[str, int],
     dataspec_file_status: dict[str, dict[str, Any]],
+    include_snapshot_quality: bool = True,
 ) -> dict[str, Any]:
     stop_reasons: list[str] = []
     warn_reasons: list[str] = []
@@ -490,6 +521,9 @@ def _evaluate_health(
     runners = int(health["runner_rows"])
     missing_start_time = int(health["missing_start_time"])
     race_stub = int(health["race_stub"])
+    snapshot_rows = int(health.get("t5_snapshot_rows", 0))
+    snapshot_odds_missing_rows = int(health.get("snapshot_odds_missing_rows", 0))
+    snapshot_odds_missing_races = int(health.get("snapshot_odds_missing_races", 0))
 
     if races == 0:
         stop_reasons.append("core.race rows=0")
@@ -518,6 +552,23 @@ def _evaluate_health(
         warn_reasons.append("rt_dm_rows=0")
     if int(health["rt_tm_rows"]) == 0:
         warn_reasons.append("rt_tm_rows=0")
+
+    if include_snapshot_quality and snapshot_rows > 0:
+        if snapshot_odds_missing_rows * 2 >= snapshot_rows:
+            warn_reasons.append(
+                "snapshot odds_missing ratio high "
+                f"({snapshot_odds_missing_rows}/{snapshot_rows}, threshold=0.50)"
+            )
+        elif snapshot_odds_missing_rows > 0:
+            warn_reasons.append(f"snapshot odds_missing_rows={snapshot_odds_missing_rows}")
+
+        if races > 0 and snapshot_odds_missing_races * 2 >= races:
+            warn_reasons.append(
+                "snapshot all-odds-missing races ratio high "
+                f"({snapshot_odds_missing_races}/{races}, threshold=0.50)"
+            )
+        elif snapshot_odds_missing_races > 0:
+            warn_reasons.append(f"snapshot odds_missing_races={snapshot_odds_missing_races}")
 
     for dataspec, ds_status in dataspec_file_status.items():
         status = ds_status.get("status")
@@ -766,6 +817,7 @@ def main() -> None:
                 }
                 for ds in dataspec_status
             },
+            include_snapshot_quality=False,
         )
         if before_build_eval["status"] == "stop":
             _fail(f"health stop before build: {before_build_eval['stop_reasons']}")
@@ -810,6 +862,7 @@ def main() -> None:
                 }
                 for ds in dataspec_status
             },
+            include_snapshot_quality=True,
         )
         if after_snapshot_eval["status"] == "stop":
             _fail(f"health stop after snapshot: {after_snapshot_eval['stop_reasons']}")

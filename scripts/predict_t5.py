@@ -424,6 +424,18 @@ def _predict_and_score(
     matrix = coerce_model_matrix(prediction_frame, feature_names)
     _ = model.predict(matrix)
     prediction_frame["p"] = predict_with_optional_calibrator(model, calibrator, matrix)
+    prediction_frame["odds_win_t5"] = pd.to_numeric(
+        prediction_frame["odds_win_t5"], errors="coerce"
+    )
+    existing_missing = (
+        prediction_frame["odds_missing_flag"].fillna(False).astype(bool)
+        if "odds_missing_flag" in prediction_frame.columns
+        else pd.Series(False, index=prediction_frame.index)
+    )
+    non_positive_or_null = prediction_frame["odds_win_t5"].isna() | (
+        prediction_frame["odds_win_t5"] <= 0
+    )
+    prediction_frame["odds_missing_flag"] = (existing_missing | non_positive_or_null).astype(bool)
 
     prediction_frame["odds_stale_flag"] = (
         pd.to_numeric(prediction_frame["odds_snapshot_age_sec"], errors="coerce")
@@ -440,7 +452,7 @@ def _predict_and_score(
     for row in prediction_frame.itertuples(index=False):
         odds = row.odds_win_t5
         p_win = row.p
-        odds_missing = bool(row.odds_missing_flag) or pd.isna(odds)
+        odds_missing = bool(row.odds_missing_flag) or pd.isna(odds) or float(odds) <= 0
         odds_stale = int(row.odds_stale_flag) == 1
 
         if odds_missing:

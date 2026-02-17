@@ -22,6 +22,7 @@ from app.infrastructure.parsers import (
     EventChangeRecord,
     HorseExclusionRecord,
     OddsRecord,
+    OddsTimeSeriesRecord,
     PayoutRecord,
     RaceRecord,
     RunnerRecord,
@@ -422,6 +423,41 @@ class TestOddsRecordParser:
         assert len(brackets) == 1
         assert brackets[0].horse_no == "11"
         assert brackets[0].odds_1 == 5.0
+
+
+class TestOddsTimeSeriesRecordParser:
+    """OddsTimeSeriesRecordパーサーのテスト"""
+
+    def test_parse_treats_masked_odds_as_none(self):
+        b_payload = bytearray(b" " * 962)
+
+        def put(offset: int, s: str):
+            b = s.encode("cp932")
+            b_payload[offset : offset + len(b)] = b
+
+        # Header + timestamp key fields
+        put(0, "O1")
+        put(2, "1")
+        put(3, "20260208")
+        put(27, "02080512")
+        put(37, "00012345678")
+
+        # Win block: horse_no(2) + odds(4) + pop(2)
+        put(43, "01****01")  # masked odds -> None
+        put(51, "02000002")  # zero odds stays 0 (later snapshot/predict safeguards handle it)
+        put(59, "03012503")
+
+        payload = bytes(b_payload).decode("cp932", errors="replace")
+        rows = OddsTimeSeriesRecord.parse(payload, race_id=202602080101)
+        assert len(rows) == 3
+
+        by_horse = {row.horse_no: row for row in rows}
+        assert by_horse[1].win_odds_x10 is None
+        assert by_horse[1].win_popularity == 1
+        assert by_horse[2].win_odds_x10 == 0
+        assert by_horse[2].win_popularity == 2
+        assert by_horse[3].win_odds_x10 == 125
+        assert by_horse[3].win_popularity == 3
 
 
 class TestHorseExclusionRecordParser:

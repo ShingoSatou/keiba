@@ -60,3 +60,28 @@ def test_evaluate_health_warn_on_partial_missing():
     assert "race_stub=1" in evaluated["warn_reasons"]
     assert "0B13 files missing (continue)" in evaluated["warn_reasons"]
     assert "0B11 files missing (warn)" in evaluated["warn_reasons"]
+
+
+def test_evaluate_health_warns_on_snapshot_odds_missing():
+    health = {
+        "races": 10,
+        "runner_rows": 120,
+        "missing_start_time": 0,
+        "race_stub": 0,
+        "o1_rows": 10,
+        "wh_rows": 10,
+        "event_rows": 8,
+        "rt_dm_rows": 20,
+        "rt_tm_rows": 20,
+        "t5_snapshot_rows": 100,
+        "snapshot_odds_missing_rows": 60,
+        "snapshot_odds_missing_races": 6,
+    }
+    evaluated = ops_t5_dryrun._evaluate_health(health, {}, include_snapshot_quality=True)
+
+    assert evaluated["status"] == "warn"
+    assert "snapshot odds_missing ratio high (60/100, threshold=0.50)" in evaluated["warn_reasons"]
+    assert (
+        "snapshot all-odds-missing races ratio high (6/10, threshold=0.50)"
+        in evaluated["warn_reasons"]
+    )

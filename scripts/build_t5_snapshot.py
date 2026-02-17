@@ -75,6 +75,20 @@ def build_snapshot(
         int(missing_start_time["n"]) if missing_start_time else 0,
     )
 
+    # 対象日の再計算時に、除外馬や欠損再判定で不要になった行が残らないように先に掃除する
+    db.execute(
+        """
+        DELETE FROM mart.t5_runner_snapshot
+        WHERE race_date BETWEEN %(from_date)s AND %(to_date)s
+          AND feature_set = %(feature_set)s
+        """,
+        {
+            "from_date": from_date,
+            "to_date": to_date,
+            "feature_set": feature_set,
+        },
+    )
+
     sql = """
     WITH tc_latest AS (
         SELECT
@@ -412,7 +426,7 @@ def build_snapshot(
             ohs.data_kbn AS o1_data_kbn,
             ohs.announce_mmddhhmi AS o1_announce_mmddhhmi,
             CASE
-                WHEN o1w.win_odds_x10 IS NULL THEN NULL
+                WHEN o1w.win_odds_x10 IS NULL OR o1w.win_odds_x10 <= 0 THEN NULL
                 ELSE ROUND(o1w.win_odds_x10::numeric / 10.0, 2)
             END AS odds_win_t5,
             o1w.win_popularity AS pop_win_t5,
@@ -429,7 +443,7 @@ def build_snapshot(
                     )
                 )::INT
             END AS odds_snapshot_age_sec,
-            (o1w.win_odds_x10 IS NULL) AS odds_missing_flag,
+            (o1w.win_odds_x10 IS NULL OR o1w.win_odds_x10 <= 0) AS odds_missing_flag,
             final.odds_win AS odds_win_final,
             final.pop_win AS pop_win_final,
             whs.announce_mmddhhmi AS wh_announce_mmddhhmi,

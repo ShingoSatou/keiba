@@ -123,6 +123,19 @@ def _slice_byte_int(data: bytes, start: int, length: int, default: int = 0) -> i
     return int(digits)
 
 
+def _slice_byte_maskable_int(data: bytes, start: int, length: int) -> int | None:
+    """バイト列から整数を取得（マスク/欠損はNone）"""
+    s = _slice_byte_decode(data, start, length)
+    if not s:
+        return None
+    if "*" in s:
+        return None
+    digits = "".join(c for c in s if c.isdigit())
+    if not digits:
+        return None
+    return int(digits)
+
+
 def _slice_byte_time(data: bytes, start: int, length: int = 4) -> time | None:
     """バイト列から時刻(HHMM)を取得"""
     s = _slice_byte_decode(data, start, length)
@@ -808,7 +821,7 @@ class OddsTimeSeriesRecord:
     data_kbn: int  # 1=中間, 2=前日最終, 3=最終, 4=確定
     announce_mmddhhmi: str  # 発表月日時分 (MMDDhhmm)
     horse_no: int
-    win_odds_x10: int  # オッズ×10 (12.3倍 → 123)
+    win_odds_x10: int | None  # オッズ×10 (12.3倍 → 123)
     win_popularity: int | None
     # ヘッダー情報
     win_pool_total_100yen: int | None
@@ -857,10 +870,10 @@ class OddsTimeSeriesRecord:
         for i in range(O1_WIN_COUNT):
             offset = O1_WIN_START + i * O1_WIN_BLOCK_LEN
             h_no = _slice_byte_int(b_payload, offset, 2)
-            odds_raw = _slice_byte_int(b_payload, offset + 2, 4)
-            pop = _slice_byte_int(b_payload, offset + 6, 2)
+            odds_raw = _slice_byte_maskable_int(b_payload, offset + 2, 4)
+            pop = _slice_byte_maskable_int(b_payload, offset + 6, 2)
 
-            if h_no and h_no > 0 and odds_raw is not None:
+            if h_no and h_no > 0:
                 results.append(
                     cls(
                         race_id=race_id,
@@ -868,7 +881,7 @@ class OddsTimeSeriesRecord:
                         announce_mmddhhmi=announce_mmddhhmi,
                         horse_no=h_no,
                         win_odds_x10=odds_raw,
-                        win_popularity=pop if pop > 0 else None,
+                        win_popularity=pop if pop and pop > 0 else None,
                         win_pool_total_100yen=win_pool_total if win_pool_total > 0 else None,
                     )
                 )

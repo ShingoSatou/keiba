@@ -174,11 +174,10 @@ def verify_o1():
                 )
                 # 最初の3頭だけ詳細表示
                 for h in parsed_list[:3]:
-                    print(
-                        f"       馬番{h.horse_no}: "
-                        f"odds={h.win_odds_x10 / 10:.1f}倍, "
-                        f"pop={h.win_popularity}"
+                    odds_text = (
+                        f"{h.win_odds_x10 / 10:.1f}倍" if h.win_odds_x10 is not None else "欠損"
                     )
+                    print(f"       馬番{h.horse_no}: odds={odds_text}, pop={h.win_popularity}")
                 success += 1
             else:
                 print("  ⚠️  O1: パース結果が空")

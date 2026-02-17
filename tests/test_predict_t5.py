@@ -165,6 +165,35 @@ def test_predict_and_score_coerces_object_dtype_for_model(monkeypatch):
     assert result.loc[0, "p"] == 0.7
 
 
+def test_predict_and_score_skips_non_positive_odds(monkeypatch):
+    monkeypatch.setattr(
+        predict_t5,
+        "load_model",
+        lambda: (_DummyModel(), _DummyCalibrator(), ["f1"]),
+    )
+    frame = pd.DataFrame(
+        [
+            {
+                "f1": 0.9,
+                "odds_win_t5": 0,
+                "odds_snapshot_age_sec": 10,
+                "odds_missing_flag": False,
+            }
+        ]
+    )
+    result = predict_t5._predict_and_score(
+        frame=frame,
+        odds_stale_sec=900,
+        slippage=0.15,
+        min_prob=0.03,
+        bet_amount=500,
+    )
+
+    assert bool(result.loc[0, "odds_missing_flag"]) is True
+    assert result.loc[0, "recommendation"] == "skip"
+    assert pd.isna(result.loc[0, "ev"])
+
+
 def test_merge_rt_mining_features_uses_snapshot_keys():
     asof_a = datetime(2026, 2, 3, 12, 30)
     asof_b = datetime(2026, 2, 3, 12, 35)
