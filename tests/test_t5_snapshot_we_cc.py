@@ -17,3 +17,8 @@ def test_build_t5_snapshot_sql_contains_we_cc_keys():
 def test_build_t5_snapshot_filters_out_race_no_zero():
     source = Path("scripts/build_t5_snapshot.py").read_text(encoding="utf-8")
     assert source.count("race_no BETWEEN 1 AND 12") >= 4
+
+
+def test_build_t5_snapshot_treats_non_positive_odds_as_missing():
+    source = Path("scripts/build_t5_snapshot.py").read_text(encoding="utf-8")
+    assert "o1w.win_odds_x10 IS NULL OR o1w.win_odds_x10 <= 0" in source
