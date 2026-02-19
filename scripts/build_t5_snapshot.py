@@ -13,7 +13,7 @@ import argparse
 import logging
 import subprocess
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 # プロジェクトルート設定
@@ -41,41 +41,222 @@ def detect_git_version() -> str:
         return "unknown"
 
 
+def _run_command(cmd: list[str]) -> None:
+    logger.info("run: %s", " ".join(cmd))
+    subprocess.run(cmd, cwd=PROJECT_ROOT, check=True)
+
+
+def _fetch_count(db: Database, sql: str, params: dict[str, object]) -> int:
+    row = db.fetch_one(sql, params)
+    return int(row["n"]) if row and row.get("n") is not None else 0
+
+
+def _iter_dates(from_date: date, to_date: date) -> list[date]:
+    current = from_date
+    dates: list[date] = []
+    while current <= to_date:
+        dates.append(current)
+        current += timedelta(days=1)
+    return dates
+
+
+def _fetch_day_health(db: Database, target_date: date) -> dict[str, int]:
+    race_date = target_date.isoformat()
+    ymd = int(target_date.strftime("%Y%m%d"))
+    race_id_from = ymd * 10000
+    race_id_to = race_id_from + 1099
+    params = {
+        "race_date": race_date,
+        "race_id_from": race_id_from,
+        "race_id_to": race_id_to,
+    }
+    races = _fetch_count(
+        db,
+        """
+        SELECT COUNT(*) AS n
+        FROM core.race
+        WHERE race_date = %(race_date)s
+          AND track_code BETWEEN 1 AND 10
+          AND race_no BETWEEN 1 AND 12
+        """,
+        params,
+    )
+    runner_rows = _fetch_count(
+        db,
+        """
+        SELECT COUNT(*) AS n
+        FROM core.runner
+        WHERE race_id BETWEEN %(race_id_from)s AND %(race_id_to)s
+        """,
+        params,
+    )
+    missing_start_time = _fetch_count(
+        db,
+        """
+        SELECT COUNT(*) AS n
+        FROM core.race
+        WHERE race_date = %(race_date)s
+          AND track_code BETWEEN 1 AND 10
+          AND race_no BETWEEN 1 AND 12
+          AND start_time IS NULL
+        """,
+        params,
+    )
+    race_stub = _fetch_count(
+        db,
+        """
+        SELECT COUNT(*) AS n
+        FROM core.race
+        WHERE race_date = %(race_date)s
+          AND track_code BETWEEN 1 AND 10
+          AND race_no BETWEEN 1 AND 12
+          AND (surface = 0 OR distance_m = 0)
+        """,
+        params,
+    )
+    return {
+        "races": races,
+        "runner_rows": runner_rows,
+        "missing_start_time": missing_start_time,
+        "race_stub": race_stub,
+    }
+
+
+def _evaluate_day_health(
+    health: dict[str, int],
+    missing_start_time_stop_ratio: float,
+    missing_start_time_warn_ratio: float,
+) -> tuple[list[str], list[str]]:
+    stop_reasons: list[str] = []
+    warn_reasons: list[str] = []
+
+    races = int(health["races"])
+    runner_rows = int(health["runner_rows"])
+    missing_start_time = int(health["missing_start_time"])
+    race_stub = int(health["race_stub"])
+
+    if races == 0:
+        stop_reasons.append("core.race rows=0")
+    if runner_rows == 0:
+        stop_reasons.append("core.runner rows=0")
+
+    if races > 0:
+        missing_ratio = missing_start_time / races
+        if missing_ratio >= missing_start_time_stop_ratio:
+            stop_reasons.append(
+                "missing_start_time ratio too high "
+                f"({missing_start_time}/{races}, threshold={missing_start_time_stop_ratio:.2f})"
+            )
+        elif missing_ratio > missing_start_time_warn_ratio:
+            warn_reasons.append(
+                "missing_start_time ratio warning "
+                f"({missing_start_time}/{races}, threshold={missing_start_time_warn_ratio:.2f})"
+            )
+
+    if race_stub > 0:
+        warn_reasons.append(f"race_stub={race_stub}")
+
+    return stop_reasons, warn_reasons
+
+
+def _ensure_snapshot_prerequisites(
+    db: Database,
+    from_date: date,
+    to_date: date,
+    ensure_race: bool,
+    missing_start_time_stop_ratio: float,
+    missing_start_time_warn_ratio: float,
+    ops_race_force: bool,
+    ops_race_option: int,
+) -> None:
+    for target_date in _iter_dates(from_date, to_date):
+        health = _fetch_day_health(db, target_date)
+        stop_reasons, warn_reasons = _evaluate_day_health(
+            health=health,
+            missing_start_time_stop_ratio=missing_start_time_stop_ratio,
+            missing_start_time_warn_ratio=missing_start_time_warn_ratio,
+        )
+        logger.info(
+            "prereq[%s] races=%s runners=%s missing_start_time=%s race_stub=%s",
+            target_date.isoformat(),
+            health["races"],
+            health["runner_rows"],
+            health["missing_start_time"],
+            health["race_stub"],
+        )
+        for reason in warn_reasons:
+            logger.warning("prereq warn[%s]: %s", target_date.isoformat(), reason)
+        if not stop_reasons:
+            continue
+
+        if not ensure_race:
+            raise RuntimeError(
+                f"snapshot prerequisite failed ({target_date.isoformat()}): "
+                + "; ".join(stop_reasons)
+            )
+
+        race_date = target_date.strftime("%Y%m%d")
+        cmd = [
+            "uv",
+            "run",
+            "python",
+            "scripts/ops_race.py",
+            "--race-date",
+            race_date,
+            "--option",
+            str(ops_race_option),
+        ]
+        if ops_race_force:
+            cmd.append("--force")
+        _run_command(cmd)
+
+        health_after = _fetch_day_health(db, target_date)
+        stop_after, warn_after = _evaluate_day_health(
+            health=health_after,
+            missing_start_time_stop_ratio=missing_start_time_stop_ratio,
+            missing_start_time_warn_ratio=missing_start_time_warn_ratio,
+        )
+        logger.info(
+            "prereq-after[%s] races=%s runners=%s missing_start_time=%s race_stub=%s",
+            target_date.isoformat(),
+            health_after["races"],
+            health_after["runner_rows"],
+            health_after["missing_start_time"],
+            health_after["race_stub"],
+        )
+        for reason in warn_after:
+            logger.warning("prereq warn-after[%s]: %s", target_date.isoformat(), reason)
+        if stop_after:
+            raise RuntimeError(
+                f"snapshot prerequisite failed after ops_race ({target_date.isoformat()}): "
+                + "; ".join(stop_after)
+            )
+
+
 def build_snapshot(
     db: Database,
     from_date: date,
     to_date: date,
     feature_set: str,
     code_version: str,
+    ensure_race: bool,
+    missing_start_time_stop_ratio: float,
+    missing_start_time_warn_ratio: float,
+    ops_race_force: bool,
+    ops_race_option: int,
 ) -> None:
-    missing_start_time = db.fetch_one(
-        """
-        SELECT COUNT(*) AS n
-        FROM core.race
-        WHERE race_date BETWEEN %(from_date)s AND %(to_date)s
-          AND track_code BETWEEN 1 AND 10
-          AND race_no BETWEEN 1 AND 12
-          AND start_time IS NULL
-        """,
-        {"from_date": from_date, "to_date": to_date},
-    )
-    total_target_races = db.fetch_one(
-        """
-        SELECT COUNT(*) AS n
-        FROM core.race
-        WHERE race_date BETWEEN %(from_date)s AND %(to_date)s
-          AND track_code BETWEEN 1 AND 10
-          AND race_no BETWEEN 1 AND 12
-        """,
-        {"from_date": from_date, "to_date": to_date},
-    )
-    logger.info(
-        "target races=%s (missing start_time=%s)",
-        int(total_target_races["n"]) if total_target_races else 0,
-        int(missing_start_time["n"]) if missing_start_time else 0,
+    _ensure_snapshot_prerequisites(
+        db=db,
+        from_date=from_date,
+        to_date=to_date,
+        ensure_race=ensure_race,
+        missing_start_time_stop_ratio=missing_start_time_stop_ratio,
+        missing_start_time_warn_ratio=missing_start_time_warn_ratio,
+        ops_race_force=ops_race_force,
+        ops_race_option=ops_race_option,
     )
 
-    # 対象日の再計算時に、除外馬や欠損再判定で不要になった行が残らないように先に掃除する
+    # 前提確認が通った後に対象期間を掃除する（失敗時に既存スナップを消さない）
     db.execute(
         """
         DELETE FROM mart.t5_runner_snapshot
@@ -687,6 +868,43 @@ def main():
         default="",
         help="コードバージョン。未指定時は git short hash を自動設定",
     )
+    parser.add_argument(
+        "--ensure-race",
+        dest="ensure_race",
+        action="store_true",
+        help="core.race/core.runner/start_time の前提不足時に ops_race.py を自動実行する",
+    )
+    parser.add_argument(
+        "--no-ensure-race",
+        dest="ensure_race",
+        action="store_false",
+        help="前提不足時に ops_race.py を実行せず失敗させる",
+    )
+    parser.set_defaults(ensure_race=True)
+    parser.add_argument(
+        "--missing-start-time-stop-ratio",
+        type=float,
+        default=0.50,
+        help="start_time欠損率 stop しきい値（デフォルト: 0.50）",
+    )
+    parser.add_argument(
+        "--missing-start-time-warn-ratio",
+        type=float,
+        default=0.00,
+        help="start_time欠損率 warn しきい値（デフォルト: 0.00）",
+    )
+    parser.add_argument(
+        "--ops-race-option",
+        type=int,
+        default=1,
+        choices=[1, 2, 3, 4],
+        help="ops_race.py の抽出 option (デフォルト: 1)",
+    )
+    parser.add_argument(
+        "--ops-race-force",
+        action="store_true",
+        help="ops_race.py 実行時に --force を付ける",
+    )
     args = parser.parse_args()
 
     if args.date:
@@ -700,14 +918,26 @@ def main():
 
     if from_date > to_date:
         parser.error("from_date must be <= to_date")
+    if args.missing_start_time_stop_ratio < 0:
+        parser.error("--missing-start-time-stop-ratio must be >= 0")
+    if args.missing_start_time_warn_ratio < 0:
+        parser.error("--missing-start-time-warn-ratio must be >= 0")
+    if args.missing_start_time_warn_ratio > args.missing_start_time_stop_ratio:
+        parser.error("--missing-start-time-warn-ratio must be <= --missing-start-time-stop-ratio")
 
     code_version = args.code_version.strip() or detect_git_version()
     logger.info(
-        "build snapshot: from=%s to=%s feature_set=%s code_version=%s",
+        (
+            "build snapshot: from=%s to=%s feature_set=%s code_version=%s "
+            "ensure_race=%s stop_ratio=%.2f warn_ratio=%.2f"
+        ),
         from_date,
         to_date,
         args.feature_set,
         code_version,
+        args.ensure_race,
+        args.missing_start_time_stop_ratio,
+        args.missing_start_time_warn_ratio,
     )
 
     with Database() as db:
@@ -717,6 +947,11 @@ def main():
             to_date=to_date,
             feature_set=args.feature_set,
             code_version=code_version,
+            ensure_race=args.ensure_race,
+            missing_start_time_stop_ratio=args.missing_start_time_stop_ratio,
+            missing_start_time_warn_ratio=args.missing_start_time_warn_ratio,
+            ops_race_force=args.ops_race_force,
+            ops_race_option=args.ops_race_option,
         )
         db.connect().commit()
 

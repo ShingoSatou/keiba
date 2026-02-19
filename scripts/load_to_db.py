@@ -467,7 +467,13 @@ def upsert_race(db: Database, race: RaceRecord) -> None:
         ON CONFLICT (race_id) DO UPDATE SET
             surface = CASE
                 WHEN EXCLUDED.surface > 0
-                    AND (core.race.surface = 0 OR core.race.surface IS NULL)
+                    AND (
+                        core.race.surface = 0
+                        OR core.race.surface IS NULL
+                        OR core.race.distance_m = 0
+                        OR core.race.distance_m IS NULL
+                        OR core.race.start_time IS NULL
+                    )
                 THEN EXCLUDED.surface
                 ELSE core.race.surface
             END,
@@ -480,7 +486,7 @@ def upsert_race(db: Database, race: RaceRecord) -> None:
             going = EXCLUDED.going,
             weather = EXCLUDED.weather,
             field_size = EXCLUDED.field_size,
-            start_time = EXCLUDED.start_time,
+            start_time = COALESCE(EXCLUDED.start_time, core.race.start_time),
             updated_at = now()
     """
     db.execute(
@@ -1488,9 +1494,20 @@ def process_file(db: Database, file_path: Path) -> dict[str, int]:
                     db.connect().commit()
                     logger.info(f"    {stats['raw']:,} 件処理...")
 
-            except Exception:
+            except Exception as e:
                 db.connect().rollback()
                 raw_batch = []
+                rec_id = record.get("rec_id", "??")
+                payload_head = record.get("payload", "")[:80]
+                if stats["errors"] < 20:
+                    logger.exception(
+                        "Pass1 error file=%s rec_id=%s raw_count=%s err=%s payload_head=%s",
+                        file_path.name,
+                        rec_id,
+                        stats["raw"],
+                        e,
+                        payload_head,
+                    )
                 stats["errors"] += 1
 
         if raw_batch:

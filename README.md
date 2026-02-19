@@ -2,6 +2,27 @@
 
 JRA-VANデータを用いた競馬予測モデル (LightGBM)
 
+## 非開発者向け（運用者）クイックスタート
+
+当日（開催日）の **T-5 推論**までを最短で回す手順です。詳細は `docs/運用手順.md` を参照してください。
+
+```bash
+# 1) 依存導入
+uv sync
+
+# 2) DB作成 + migrations
+bash setup_postgres_multi.sh keiba_cp
+uv run python scripts/migrate.py
+
+# 3) 当日運用（取得→投入→スナップ→推論→出力）
+uv run python scripts/ops_t5_dryrun.py --race-date 20260214 --fetch-rt --fail-on-empty
+```
+
+前提:
+- `.env` に `DATABASE_URL` を設定
+- JV-Link 取得は Windows + JV-Link + 32bit Python が必要（WSL からは `ops_*` が Windows 側を呼び出します）
+- `models/t5_bundle.pkl` が必要（なければ学習が先）
+
 ## 環境構築
 
 ```bash
@@ -47,9 +68,21 @@ uv run python scripts/migrate.py --to 0002_init_mart.sql
 
 ### 2. データ取得・ロード
 ```bash
-# JV-Linkからデータを取得してDBにロード
-uv run python scripts/extract_jvlink.py
+# JSONL → DB投入（64bit Python）
+uv run python scripts/load_to_db.py --input-dir data/
 ```
+
+> 注: `scripts/extract_jvlink.py` / `scripts/extract_rt_jvlink.py` は **JV-Link (Windows COM) のため Windows + 32bit Python 必須**です。  
+> 取得（JV-Link→JSONL）は Windows 側で実行し、DB投入は WSL/Linux（`uv`）で実行します。  
+> 当日運用は `scripts/ops_t5_dryrun.py` / `scripts/ops_rt.py` が WSL→Windows32bit をオーケストレーションします。
+
+### data/ のSQL取り込み対象
+
+- **SQLに取り込む**: `RACE/DIFF/MING/SNPN/SLOP/WOOD/0B41/0B11/0B14/0B13/0B17` の各 `*.jsonl`（`scripts/load_to_db.py`）
+- **いまは取り込まない（未整備）**: `COMM/YSCH`（取得はできるが core化/特徴量利用が未整備）
+- **取り込まない**: `train*.parquet` / `data/ops/<date>/*`（学習/運用の成果物）
+
+表（取り込み先テーブル含む）は `docs/運用手順.md` にまとめています。
 
 ### 3. 特徴量生成
 ```bash
@@ -116,6 +149,10 @@ uv run python scripts/backtest_v2.py --use-test-split --alpha 1.0 --min-prob 0.0
 
 ## ドキュメント
 
-- [Features](docs/data_design.md)
-- [System Spec](docs/system_specification.md)
+- [運用手順（非開発者向け）](docs/運用手順.md)
+- [運用仕様（T-5の採用ルール等）](docs/運用仕様書.md)
+- [データ取得仕様（JV-Link/JVRTOpen）](docs/データ取得仕様書.md)
+- [ダウンロードリスト（推奨dataspec）](docs/ダウンロードリスト.md)
+- [進捗状況（現状の制約/次にやること）](docs/進捗状況.md)
+- [DB/特徴量設計（参考）](docs/data_design.md)
 - [Reports](docs/reports/)
