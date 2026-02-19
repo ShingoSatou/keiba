@@ -110,7 +110,13 @@ class IngestService:
             ON CONFLICT (race_id) DO UPDATE SET
                 surface = CASE
                     WHEN EXCLUDED.surface > 0
-                        AND (core.race.surface = 0 OR core.race.surface IS NULL)
+                        AND (
+                            core.race.surface = 0
+                            OR core.race.surface IS NULL
+                            OR core.race.distance_m = 0
+                            OR core.race.distance_m IS NULL
+                            OR core.race.start_time IS NULL
+                        )
                     THEN EXCLUDED.surface
                     ELSE core.race.surface
                 END,
@@ -123,7 +129,7 @@ class IngestService:
                 going = EXCLUDED.going,
                 weather = EXCLUDED.weather,
                 field_size = EXCLUDED.field_size,
-                start_time = EXCLUDED.start_time,
+                start_time = COALESCE(EXCLUDED.start_time, core.race.start_time),
                 updated_at = now()
         """
         self.db.execute(

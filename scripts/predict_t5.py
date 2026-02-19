@@ -9,12 +9,14 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -23,6 +25,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.infrastructure.database import Database
 from app.services.ev_service import EVService
+from scripts.market_features import add_market_features
 from scripts.predict import (
     _add_condition_features,
     _add_inrace_features,
@@ -34,6 +37,18 @@ from scripts.predict import (
     going_to_bucket,
     load_model,
     predict_with_optional_calibrator,
+)
+from scripts.t5_modeling import (
+    META_FEATURES,
+    MODEL_M_FEATURES,
+    MODEL_O_FEATURES,
+    load_bundle,
+)
+from scripts.t5_modeling import (
+    coerce_model_matrix as coerce_bundle_matrix,
+)
+from scripts.t5_modeling import (
+    predict_proba as predict_bundle_proba,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -49,6 +64,12 @@ PREDICTION_OUTPUT_COLUMNS = [
     "odds_snapshot_age_sec",
     "odds_missing_flag",
     "odds_stale_flag",
+    "pF_raw",
+    "pM_raw",
+    "o_close_hat",
+    "p_final",
+    "EV_hat",
+    "tau",
     "p",
     "ev",
     "recommendation",
@@ -64,6 +85,8 @@ PREDICTION_OUTPUT_COLUMNS = [
     "code_version",
     "event_change_keys",
 ]
+
+BUNDLE_PATH = PROJECT_ROOT / "models" / "t5_bundle.pkl"
 
 MAJOR_MISSING_COLUMNS = [
     "odds_win_t5",
@@ -170,6 +193,74 @@ def _track_type_to_surface(track_type: int | None) -> int | None:
     return 1
 
 
+def _safe_exp(value: Any) -> float:
+    try:
+        numeric = float(value)
+    except Exception:
+        return math.nan
+    if not math.isfinite(numeric):
+        return math.nan
+    try:
+        return float(math.exp(numeric))
+    except OverflowError:
+        return math.nan
+
+
+def _load_bundle_if_exists(path: Path = BUNDLE_PATH) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        bundle = load_bundle(path)
+        if not isinstance(bundle, dict):
+            logger.warning("invalid bundle format: %s", path)
+            return None
+        return bundle
+    except Exception as exc:
+        logger.warning("failed to load bundle: %s (%s)", path, exc)
+        return None
+
+
+def _mark_one_buy_per_race(
+    frame: pd.DataFrame,
+    tau: float,
+    bet_amount: int,
+    ev_col: str = "EV_hat",
+) -> pd.DataFrame:
+    out = frame.copy()
+    out["recommendation"] = "skip"
+    out["buy_flag"] = 0
+    out["bet_amount"] = None
+    if out.empty:
+        return out
+
+    if "race_id" not in out.columns:
+        out["__race_key__"] = np.arange(len(out))
+        keys = ["__race_key__"]
+    else:
+        keys = ["race_id"]
+    if "asof_ts" in out.columns and "asof_ts" not in keys:
+        keys.append("asof_ts")
+
+    for _, race_df in out.groupby(keys, sort=False):
+        race_df = race_df.copy()
+        valid = race_df[
+            (~race_df["odds_missing_flag"].fillna(False).astype(bool))
+            & (race_df["odds_stale_flag"].fillna(0).astype(int) == 0)
+        ]
+        if valid.empty:
+            continue
+        valid = valid.sort_values([ev_col, "horse_no"], ascending=[False, True])
+        top = valid.iloc[0]
+        top_ev = pd.to_numeric(top.get(ev_col), errors="coerce")
+        if pd.isna(top_ev) or float(top_ev) < float(tau):
+            continue
+        index = int(top.name)
+        out.at[index, "recommendation"] = "buy"
+        out.at[index, "buy_flag"] = 1
+        out.at[index, "bet_amount"] = bet_amount
+    return out.drop(columns=["__race_key__"], errors="ignore")
+
+
 def _record_override(
     overrides: dict[str, dict[str, Any]],
     field: str,
@@ -262,6 +353,7 @@ def _fetch_snapshot_rows(db: Database, race_date: str, feature_set: str) -> pd.D
         s.odds_win_t5,
         s.pop_win_t5,
         s.odds_rank_t5,
+        s.win_pool_total_100yen_t5,
         s.odds_snapshot_age_sec,
         s.odds_missing_flag,
         s.wh_announce_mmddhhmi,
@@ -295,6 +387,26 @@ def _fetch_snapshot_rows(db: Database, race_date: str, feature_set: str) -> pd.D
     frame["event_change_keys"] = frame["event_change_keys"].apply(_normalize_json)
     frame["asof_ts"] = pd.to_datetime(frame["asof_ts"], errors="coerce")
     return _apply_we_cc_overrides(frame)
+
+
+def _fetch_feature_set_counts(db: Database, race_date: str) -> dict[str, int]:
+    sql = """
+    SELECT
+        feature_set,
+        COUNT(*) AS row_count
+    FROM mart.t5_runner_snapshot
+    WHERE race_date = %(race_date)s
+    GROUP BY feature_set
+    ORDER BY row_count DESC, feature_set
+    """
+    rows = db.fetch_all(sql, {"race_date": race_date})
+    counts: dict[str, int] = {}
+    for row in rows:
+        feature = str(row.get("feature_set") or "").strip()
+        if not feature:
+            continue
+        counts[feature] = int(row.get("row_count") or 0)
+    return counts
 
 
 def _merge_rt_mining_features(
@@ -406,6 +518,7 @@ def _prepare_features(db: Database, frame: pd.DataFrame) -> pd.DataFrame:
     features = _join_person_stats(db, features, race_date)
     features = _apply_racewise_features(features)
     features = _add_condition_features(db, features, race_date)
+    features = add_market_features(db, features)
     return features
 
 
@@ -415,15 +528,79 @@ def _predict_and_score(
     if frame.empty:
         return frame
 
-    model, calibrator, feature_names = load_model()
-    missing_features = [column for column in feature_names if column not in frame.columns]
-    if missing_features:
-        logger.warning("推論時に欠損している特徴量: %s", missing_features)
-
     prediction_frame = frame.copy()
-    matrix = coerce_model_matrix(prediction_frame, feature_names)
-    _ = model.predict(matrix)
-    prediction_frame["p"] = predict_with_optional_calibrator(model, calibrator, matrix)
+
+    bundle = _load_bundle_if_exists()
+    if bundle is not None and bundle.get("models"):
+        models = bundle.get("models", {})
+        feature_names = bundle.get("feature_names", {})
+        model_f = models.get("F")
+        model_m = models.get("M")
+        model_o = models.get("O")
+        model_meta = models.get("META")
+        has_all_models = (
+            model_f is not None
+            and model_m is not None
+            and model_o is not None
+            and model_meta is not None
+        )
+        if has_all_models:
+            f_features = feature_names.get("F", [])
+            m_features = feature_names.get("M", MODEL_M_FEATURES)
+            o_features = feature_names.get("O", MODEL_O_FEATURES)
+            meta_features = feature_names.get("META", META_FEATURES)
+
+            prediction_frame["pF_raw"] = predict_bundle_proba(
+                model_f, coerce_bundle_matrix(prediction_frame, list(f_features))
+            )
+            prediction_frame["pM_raw"] = predict_bundle_proba(
+                model_m, coerce_bundle_matrix(prediction_frame, list(m_features))
+            )
+            o_pred_log = model_o.predict(coerce_bundle_matrix(prediction_frame, list(o_features)))
+            prediction_frame["o_close_hat"] = np.asarray([_safe_exp(value) for value in o_pred_log])
+            prediction_frame["o_close_hat"] = np.where(
+                np.isfinite(prediction_frame["o_close_hat"]),
+                prediction_frame["o_close_hat"],
+                np.nan,
+            )
+            prediction_frame["o_close_hat"] = np.clip(
+                pd.to_numeric(prediction_frame["o_close_hat"], errors="coerce"),
+                1.0,
+                None,
+            )
+            prediction_frame["log_o_close_hat"] = np.log(prediction_frame["o_close_hat"])
+            meta_matrix = coerce_bundle_matrix(prediction_frame, list(meta_features)).fillna(0.0)
+            prediction_frame["p_final"] = predict_bundle_proba(
+                model_meta,
+                meta_matrix,
+            )
+            prediction_frame["EV_hat"] = (
+                prediction_frame["p_final"] * prediction_frame["o_close_hat"] - 1.0
+            )
+            prediction_frame["tau"] = float(bundle.get("tau", 0.0))
+        else:
+            logger.warning("bundle is incomplete; fallback to legacy single model")
+            bundle = None
+
+    if bundle is None:
+        model, calibrator, legacy_features = load_model()
+        missing_features = [
+            column for column in legacy_features if column not in prediction_frame.columns
+        ]
+        if missing_features:
+            logger.warning("推論時に欠損している特徴量: %s", missing_features)
+
+        matrix = coerce_model_matrix(prediction_frame, legacy_features)
+        _ = model.predict(matrix)
+        prediction_frame["p_final"] = predict_with_optional_calibrator(model, calibrator, matrix)
+        prediction_frame["pF_raw"] = prediction_frame["p_final"]
+        prediction_frame["pM_raw"] = prediction_frame["p_final"]
+        prediction_frame["o_close_hat"] = pd.to_numeric(
+            prediction_frame.get("odds_win_t5"), errors="coerce"
+        )
+        prediction_frame["EV_hat"] = np.nan
+        prediction_frame["tau"] = np.nan
+
     prediction_frame["odds_win_t5"] = pd.to_numeric(
         prediction_frame["odds_win_t5"], errors="coerce"
     )
@@ -444,33 +621,46 @@ def _predict_and_score(
         > float(odds_stale_sec)
     ).astype(int)
 
-    ev_service = EVService(slippage=slippage, min_prob=min_prob, bet_amount=bet_amount)
-    ev_values: list[float | None] = []
-    recommendations: list[str] = []
-    bet_amounts: list[int | None] = []
+    if bundle is not None:
+        tau = float(bundle.get("tau", 0.0))
+        prediction_frame = _mark_one_buy_per_race(
+            prediction_frame,
+            tau=tau,
+            bet_amount=bet_amount,
+            ev_col="EV_hat",
+        )
+        prediction_frame["ev"] = prediction_frame["EV_hat"]
+    else:
+        ev_service = EVService(slippage=slippage, min_prob=min_prob, bet_amount=bet_amount)
+        ev_values: list[float | None] = []
+        recommendations: list[str] = []
+        bet_amounts: list[int | None] = []
 
-    for row in prediction_frame.itertuples(index=False):
-        odds = row.odds_win_t5
-        p_win = row.p
-        odds_missing = bool(row.odds_missing_flag) or pd.isna(odds) or float(odds) <= 0
-        odds_stale = int(row.odds_stale_flag) == 1
+        for row in prediction_frame.itertuples(index=False):
+            odds = row.odds_win_t5
+            p_win = row.p_final
+            odds_missing = bool(row.odds_missing_flag) or pd.isna(odds) or float(odds) <= 0
+            odds_stale = int(row.odds_stale_flag) == 1
 
-        if odds_missing:
-            ev_values.append(None)
-            recommendations.append("skip")
-            bet_amounts.append(None)
-            continue
+            if odds_missing:
+                ev_values.append(None)
+                recommendations.append("skip")
+                bet_amounts.append(None)
+                continue
 
-        ev_result = ev_service.calculate_ev(float(p_win), float(odds))
-        should_buy = ev_result.is_buy and not odds_stale
-        ev_values.append(ev_result.ev_profit)
-        recommendations.append("buy" if should_buy else "skip")
-        bet_amounts.append(ev_service.bet_amount if should_buy else None)
+            ev_result = ev_service.calculate_ev(float(p_win), float(odds))
+            should_buy = ev_result.is_buy and not odds_stale
+            ev_values.append(ev_result.ev_profit)
+            recommendations.append("buy" if should_buy else "skip")
+            bet_amounts.append(ev_service.bet_amount if should_buy else None)
 
-    prediction_frame["ev"] = ev_values
-    prediction_frame["recommendation"] = recommendations
-    prediction_frame["buy_flag"] = (prediction_frame["recommendation"] == "buy").astype(int)
-    prediction_frame["bet_amount"] = bet_amounts
+        prediction_frame["ev"] = ev_values
+        prediction_frame["recommendation"] = recommendations
+        prediction_frame["buy_flag"] = (prediction_frame["recommendation"] == "buy").astype(int)
+        prediction_frame["bet_amount"] = bet_amounts
+        prediction_frame["EV_hat"] = prediction_frame["ev"]
+
+    prediction_frame["p"] = prediction_frame["p_final"]
     return prediction_frame
 
 
@@ -538,8 +728,12 @@ def _build_html(frame: pd.DataFrame, race_date: str, feature_set: str) -> str:
                 "odds_snapshot_age_sec",
                 "odds_missing_flag",
                 "odds_stale_flag",
-                "p",
-                "ev",
+                "pF_raw",
+                "pM_raw",
+                "p_final",
+                "o_close_hat",
+                "EV_hat",
+                "tau",
                 "recommendation",
             ]
         ].copy()
@@ -664,6 +858,11 @@ def _build_audit_payload(
     output_dir: Path,
 ) -> dict[str, Any]:
     run_missing_summary = _build_missing_summary(frame)
+    tau_value: float | None = None
+    if "tau" in frame.columns:
+        tau_series = pd.to_numeric(frame["tau"], errors="coerce").dropna()
+        if not tau_series.empty:
+            tau_value = float(tau_series.iloc[0])
     run_payload: dict[str, Any] = {
         "race_date": race_date,
         "feature_set": feature_set,
@@ -685,6 +884,7 @@ def _build_audit_payload(
             "buys": int((frame["recommendation"] == "buy").sum())
             if "recommendation" in frame.columns
             else 0,
+            "tau": tau_value,
             **run_missing_summary,
         },
         "races": [],
@@ -711,6 +911,7 @@ def _build_audit_payload(
             "tm_kbn": _to_native(row.get("tm_kbn")),
             "tm_create_time": _to_native(row.get("tm_create_time")),
             "code_version": _to_native(row.get("code_version")),
+            "tau": _to_native(row.get("tau")),
             "counts": {
                 "odds_missing": int(race_df["odds_missing_flag"].fillna(False).astype(bool).sum()),
                 "odds_stale": int(race_df["odds_stale_flag"].fillna(0).astype(int).sum()),
@@ -729,10 +930,16 @@ def _build_audit_payload(
         buy_rows = race_df[race_df["recommendation"] == "buy"].sort_values("ev", ascending=False)
         if not buy_rows.empty:
             top = buy_rows.iloc[0]
+            ev_value = (
+                float(top["EV_hat"])
+                if "EV_hat" in top and pd.notna(top["EV_hat"])
+                else (float(top["ev"]) if pd.notna(top["ev"]) else None)
+            )
             race_item["best_buy"] = {
                 "horse_no": int(top["horse_no"]) if pd.notna(top["horse_no"]) else None,
-                "p": float(top["p"]) if pd.notna(top["p"]) else None,
-                "ev": float(top["ev"]) if pd.notna(top["ev"]) else None,
+                "p_final": float(top["p_final"]) if pd.notna(top.get("p_final")) else None,
+                "p": float(top["p"]) if pd.notna(top.get("p")) else None,
+                "ev_hat": ev_value,
                 "stake": int(top["bet_amount"]) if pd.notna(top["bet_amount"]) else None,
             }
         races.append(race_item)
@@ -752,14 +959,25 @@ def run_predict_t5(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     predicted = pd.DataFrame()
+    available_feature_sets: dict[str, int] = {}
     with Database() as db:
         rows = _fetch_snapshot_rows(db, race_date=race_date, feature_set=feature_set)
         if rows.empty:
+            available_feature_sets = _fetch_feature_set_counts(db, race_date=race_date)
             logger.warning(
                 "snapshot rows are empty (date=%s feature_set=%s)",
                 race_date,
                 feature_set,
             )
+            if available_feature_sets:
+                choices = ", ".join(
+                    f"{name}:{count}" for name, count in available_feature_sets.items()
+                )
+                logger.warning(
+                    "available feature_set on %s => %s",
+                    race_date,
+                    choices,
+                )
         else:
             features = _prepare_features(db, rows)
             features = _merge_rt_mining_features(
@@ -799,6 +1017,8 @@ def run_predict_t5(
         bet_amount,
         output_dir,
     )
+    if available_feature_sets:
+        audit_payload["available_feature_sets"] = available_feature_sets
     audit_path.write_text(json.dumps(audit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info(
         "predictions exported: rows=%s races=%s buys=%s",

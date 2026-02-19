@@ -5,6 +5,7 @@ from decimal import Decimal
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from scripts import predict_t5
 
@@ -49,6 +50,31 @@ class _DummyCalibrator:
         return np.array(probs)
 
 
+class _BundleModel:
+    def __init__(self, feature: str, scale: float):
+        self.feature = feature
+        self.scale = scale
+
+    def predict(self, matrix):
+        return [float(value) * self.scale for value in matrix[self.feature].fillna(0.0)]
+
+    def predict_proba(self, matrix):
+        probs = []
+        for value in matrix[self.feature].fillna(0.0):
+            p = min(max(float(value) * self.scale, 0.01), 0.99)
+            probs.append([1 - p, p])
+        return np.array(probs)
+
+
+class _BundleMetaModel:
+    def predict_proba(self, matrix):
+        probs = []
+        for p_f, p_m in zip(matrix["pF_raw"], matrix["pM_raw"], strict=True):
+            p = min(max((float(p_f) + float(p_m)) / 2.0, 0.01), 0.99)
+            probs.append([1 - p, p])
+        return np.array(probs)
+
+
 class _DummyDB:
     def __init__(self, dm_rows, tm_rows):
         self.dm_rows = dm_rows
@@ -60,6 +86,41 @@ class _DummyDB:
         if "core.rt_mining_tm" in query:
             return self.tm_rows
         raise AssertionError("unexpected query")
+
+
+class _FeatureSetDB:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def fetch_all(self, query, params):
+        assert "FROM mart.t5_runner_snapshot" in query
+        return self.rows
+
+
+class _EmptySnapshotDB:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def fetch_all(self, query, params):
+        if "GROUP BY feature_set" in query:
+            return [{"feature_set": "realtime", "row_count": 501}]
+        if "FROM mart.t5_runner_snapshot s" in query:
+            return []
+        raise AssertionError("unexpected query")
+
+
+@pytest.fixture(autouse=True)
+def _disable_bundle_by_default(monkeypatch, request):
+    if request.node.name == "test_predict_and_score_with_bundle_outputs_f_m_o_and_tau":
+        return
+    monkeypatch.setattr(
+        predict_t5,
+        "_load_bundle_if_exists",
+        lambda path=predict_t5.BUNDLE_PATH: None,
+    )
 
 
 def test_predict_and_score_skips_missing_and_stale(monkeypatch):
@@ -344,3 +405,115 @@ def test_apply_we_cc_overrides_updates_distance_surface_and_going():
     assert int(overridden.loc[0, "weather"]) == 3
     assert predict_t5.distance_to_bucket(int(overridden.loc[0, "distance_m"])) == 1400
     assert "distance_m" in overridden.loc[0, "race_field_overrides"]
+
+
+def test_predict_and_score_with_bundle_outputs_f_m_o_and_tau(monkeypatch):
+    bundle = {
+        "tau": 0.2,
+        "models": {
+            "F": _BundleModel("f1", 1.0),
+            "M": _BundleModel("f1", 0.8),
+            "O": _BundleModel("f1", 2.0),
+            "META": _BundleMetaModel(),
+        },
+        "feature_names": {
+            "F": ["f1"],
+            "M": ["f1"],
+            "O": ["f1"],
+            "META": [
+                "pF_raw",
+                "pM_raw",
+                "o_close_hat",
+                "log_o_close_hat",
+                "M_odds_win_t5",
+                "M_log_odds_t5",
+            ],
+        },
+    }
+    monkeypatch.setattr(
+        predict_t5,
+        "_load_bundle_if_exists",
+        lambda path=predict_t5.BUNDLE_PATH: bundle,
+    )
+
+    frame = pd.DataFrame(
+        [
+            {
+                "race_id": 202602030501,
+                "asof_ts": datetime(2026, 2, 3, 12, 30),
+                "horse_no": 1,
+                "f1": 0.9,
+                "M_odds_win_t5": 3.0,
+                "M_log_odds_t5": np.log(3.0),
+                "odds_win_t5": 3.0,
+                "odds_snapshot_age_sec": 10,
+                "odds_missing_flag": False,
+            },
+            {
+                "race_id": 202602030501,
+                "asof_ts": datetime(2026, 2, 3, 12, 30),
+                "horse_no": 2,
+                "f1": 0.4,
+                "M_odds_win_t5": 5.0,
+                "M_log_odds_t5": np.log(5.0),
+                "odds_win_t5": 5.0,
+                "odds_snapshot_age_sec": 10,
+                "odds_missing_flag": False,
+            },
+        ]
+    )
+    out = predict_t5._predict_and_score(
+        frame=frame,
+        odds_stale_sec=900,
+        slippage=0.15,
+        min_prob=0.03,
+        bet_amount=500,
+    )
+
+    assert "pF_raw" in out.columns
+    assert "pM_raw" in out.columns
+    assert "o_close_hat" in out.columns
+    assert "p_final" in out.columns
+    assert "EV_hat" in out.columns
+    assert float(out["tau"].dropna().iloc[0]) == 0.2
+    assert int(out["buy_flag"].sum()) == 1
+
+
+def test_fetch_feature_set_counts_returns_expected_map():
+    db = _FeatureSetDB(
+        rows=[
+            {"feature_set": "realtime", "row_count": 501},
+            {"feature_set": "backfillable", "row_count": 356},
+        ]
+    )
+
+    counts = predict_t5._fetch_feature_set_counts(db, race_date="2026-02-08")
+
+    assert counts == {"realtime": 501, "backfillable": 356}
+
+
+def test_run_predict_t5_adds_available_feature_sets_when_snapshot_empty(monkeypatch, tmp_path):
+    monkeypatch.setattr(predict_t5, "Database", _EmptySnapshotDB)
+    monkeypatch.setattr(
+        predict_t5,
+        "_build_audit_payload",
+        lambda *args, **kwargs: {
+            "race_date": kwargs["race_date"] if "race_date" in kwargs else args[1],
+            "feature_set": kwargs["feature_set"] if "feature_set" in kwargs else args[2],
+            "summary": {"rows": 0},
+            "races": [],
+        },
+    )
+    monkeypatch.setattr(predict_t5, "_build_html", lambda *args, **kwargs: "<html></html>")
+
+    payload = predict_t5.run_predict_t5(
+        race_date="2026-02-08",
+        feature_set="backfillable",
+        output_dir=tmp_path,
+        odds_stale_sec=900,
+        slippage=0.15,
+        min_prob=0.03,
+        bet_amount=500,
+    )
+
+    assert payload["available_feature_sets"] == {"realtime": 501}
