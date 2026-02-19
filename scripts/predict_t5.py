@@ -556,9 +556,7 @@ def _predict_and_score(
             prediction_frame["pM_raw"] = predict_bundle_proba(
                 model_m, coerce_bundle_matrix(prediction_frame, list(m_features))
             )
-            o_pred_log = model_o.predict(
-                coerce_bundle_matrix(prediction_frame, list(o_features))
-            )
+            o_pred_log = model_o.predict(coerce_bundle_matrix(prediction_frame, list(o_features)))
             prediction_frame["o_close_hat"] = np.asarray([_safe_exp(value) for value in o_pred_log])
             prediction_frame["o_close_hat"] = np.where(
                 np.isfinite(prediction_frame["o_close_hat"]),

@@ -112,9 +112,7 @@ def _fetch_market_points(
             params[key_race] = int(row.race_id)
             params[key_horse] = int(row.horse_no)
             params[key_asof] = row.asof_ts
-            value_rows.append(
-                f"(%({key_row})s, %({key_race})s, %({key_horse})s, %({key_asof})s)"
-            )
+            value_rows.append(f"(%({key_row})s, %({key_race})s, %({key_horse})s, %({key_asof})s)")
 
         query = _build_chunk_query(minutes=minutes, value_rows=value_rows)
         rows = db.fetch_all(query, params)
@@ -252,10 +250,7 @@ def add_market_features(
     prev_col = "M_odds_tminus_10"
     last_values = pd.to_numeric(output[last_col], errors="coerce")
     prev_values = pd.to_numeric(output[prev_col], errors="coerce")
-    output["M_odds_last_change"] = (
-        (last_values - prev_values)
-        / prev_values
-    )
+    output["M_odds_last_change"] = (last_values - prev_values) / prev_values
     output["M_odds_last_change"] = output["M_odds_last_change"].replace([np.inf, -np.inf], np.nan)
     output["M_odds_jump_flag"] = (
         pd.to_numeric(output["M_odds_last_change"], errors="coerce").abs() > 0.15

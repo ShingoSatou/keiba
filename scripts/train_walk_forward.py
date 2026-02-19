@@ -62,9 +62,7 @@ def _load_dataset(input_path: Path) -> pd.DataFrame:
         frame.get("target_log_odds_final"), errors="coerce"
     )
     frame["market_available_flag"] = (
-        pd.to_numeric(frame.get("market_available_flag"), errors="coerce")
-        .fillna(0)
-        .astype(int)
+        pd.to_numeric(frame.get("market_available_flag"), errors="coerce").fillna(0).astype(int)
     )
     return frame.sort_values(["race_date", "race_id", "horse_no"]).reset_index(drop=True)
 
@@ -430,9 +428,7 @@ def run_walk_forward(
         ),
         "mean_auc_META": _safe_mean([report["metrics"]["META"]["auc"] for report in fold_reports]),
         "mean_roi": _safe_mean([report["betting"]["roi"] for report in fold_reports]),
-        "mean_bet_ratio": _safe_mean(
-            [report["betting"]["bet_ratio"] for report in fold_reports]
-        ),
+        "mean_bet_ratio": _safe_mean([report["betting"]["bet_ratio"] for report in fold_reports]),
     }
 
     return {
