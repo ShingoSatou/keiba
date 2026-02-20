@@ -11,4 +11,3 @@ def test_going_to_bucket_treats_nan_as_missing() -> None:
     assert going_to_bucket(1) == 1
     assert going_to_bucket(2) == 1
     assert going_to_bucket(3) == 2
-
