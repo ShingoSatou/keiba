@@ -82,6 +82,23 @@ def get_monthly() -> list:
 # ---------------------------------------------------------------------------
 
 
+@router.post("/reload")
+def reload_result() -> dict:
+    """キャッシュをクリアして最新のJSONを再読み込みする"""
+    _load_result.cache_clear()
+    try:
+        _load_result()
+    except FileNotFoundError as exc:
+        logger.warning(str(exc))
+        return {"status": "warn", "message": "ファイルが見つかりません"}
+    return {"status": "ok", "message": "再読み込み完了"}
+
+
+# ---------------------------------------------------------------------------
+# GET /ui/bets
+# ---------------------------------------------------------------------------
+
+
 @router.get("/bets")
 def get_bets(
     page: int = Query(default=1, ge=1, description="ページ番号（1始まり）"),
