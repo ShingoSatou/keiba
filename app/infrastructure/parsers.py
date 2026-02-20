@@ -277,7 +277,9 @@ class RaceRecord:
         elif 51 <= track_type_code <= 59:
             surface = 3  # 障害
 
-        distance_m = _normalize_distance_m(_slice_byte_int(b_payload, RA_DISTANCE_START, RA_DISTANCE_LEN))
+        distance_m = _normalize_distance_m(
+            _slice_byte_int(b_payload, RA_DISTANCE_START, RA_DISTANCE_LEN)
+        )
 
         # 馬場状態 (芝 or ダート)
         if surface == 1:

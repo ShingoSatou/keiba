@@ -88,8 +88,7 @@ def _iter_ra_rows(db: Database, from_date: date, to_date: date | None, batch_siz
         )
         if not rows:
             return
-        for row in rows:
-            yield row
+        yield from rows
         last_id = rows[-1]["id"]
 
 

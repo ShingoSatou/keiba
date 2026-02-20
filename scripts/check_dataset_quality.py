@@ -119,7 +119,13 @@ def main() -> None:
     if df.empty:
         raise SystemExit("dataset is empty")
 
-    required_cols = set(FEATURE_COLS) | {"race_id", "race_date", "surface", "distance_m", TARGET_COL}
+    required_cols = set(FEATURE_COLS) | {
+        "race_id",
+        "race_date",
+        "surface",
+        "distance_m",
+        TARGET_COL,
+    }
     missing_cols = sorted(required_cols - set(df.columns))
     if missing_cols:
         raise SystemExit(f"missing required columns: {missing_cols}")
@@ -144,7 +150,9 @@ def main() -> None:
         else pd.Series([], dtype="bool")
     )
     n_runs_5_missing_rate = float(n_runs_5_missing.mean()) if len(n_runs_5_missing) else None
-    n_sim_runs_5_missing_rate = float(n_sim_runs_5_missing.mean()) if len(n_sim_runs_5_missing) else None
+    n_sim_runs_5_missing_rate = (
+        float(n_sim_runs_5_missing.mean()) if len(n_sim_runs_5_missing) else None
+    )
 
     Xtr, _, Xes, _, Xte, _ = _split_by_race_id(
         df,
@@ -181,18 +189,24 @@ def main() -> None:
         f"class_code_missing={int(class_code_missing.sum())} ({class_code_missing.mean():.2%})",
     ]
     if len(n_runs_5_missing):
-        anomaly_parts.append(f"n_runs_5_missing={int(n_runs_5_missing.sum())} ({n_runs_5_missing_rate:.2%})")
+        anomaly_parts.append(
+            f"n_runs_5_missing={int(n_runs_5_missing.sum())} ({n_runs_5_missing_rate:.2%})"
+        )
     if len(n_sim_runs_5_missing):
         anomaly_parts.append(
-            f"n_sim_runs_5_missing={int(n_sim_runs_5_missing.sum())} ({n_sim_runs_5_missing_rate:.2%})"
+            "n_sim_runs_5_missing="
+            f"{int(n_sim_runs_5_missing.sum())} ({n_sim_runs_5_missing_rate:.2%})"
         )
     print("anomalies: " + " ".join(anomaly_parts))
     for s in split_stats:
         print(
             f"{s.name}: rows={s.rows} races={s.races} pos={s.positives} ({s.pos_rate:.2%}) "
             f"dates={s.date_min}..{s.date_max} "
-            f"winners_per_race 0:{s.winner_races_0} 1:{s.winner_races_1} 2:{s.winner_races_2} >2:{s.winner_races_gt2} "
-            f"races<{args.min_horses}horses:{s.races_lt_min_horses} placeholder_rate:{s.placeholder_rate:.2%}"
+            "winners_per_race "
+            f"0:{s.winner_races_0} 1:{s.winner_races_1} "
+            f"2:{s.winner_races_2} >2:{s.winner_races_gt2} "
+            f"races<{args.min_horses}horses:{s.races_lt_min_horses} "
+            f"placeholder_rate:{s.placeholder_rate:.2%}"
         )
     print(f"always_missing_features={len(always_missing)}")
     if always_missing:
@@ -241,22 +255,35 @@ def main() -> None:
             f"placeholder_rate={placeholder.mean():.4%} > {args.max_placeholder_rate:.4%}"
         )
     if float(dist_lt800.mean()) > args.max_dist_lt800_rate:
-        gate_failures.append(f"dist_lt800_rate={dist_lt800.mean():.4%} > {args.max_dist_lt800_rate:.4%}")
+        gate_failures.append(
+            f"dist_lt800_rate={dist_lt800.mean():.4%} > {args.max_dist_lt800_rate:.4%}"
+        )
     if float(dist_lt100.mean()) > args.max_dist_lt100_rate:
-        gate_failures.append(f"dist_lt100_rate={dist_lt100.mean():.4%} > {args.max_dist_lt100_rate:.4%}")
+        gate_failures.append(
+            f"dist_lt100_rate={dist_lt100.mean():.4%} > {args.max_dist_lt100_rate:.4%}"
+        )
     if float(going_zero.mean()) > args.max_going_zero_rate:
-        gate_failures.append(f"going_zero_rate={going_zero.mean():.4%} > {args.max_going_zero_rate:.4%}")
+        gate_failures.append(
+            f"going_zero_rate={going_zero.mean():.4%} > {args.max_going_zero_rate:.4%}"
+        )
     if float(field_size_zero.mean()) > args.max_field_size_zero_rate:
         gate_failures.append(
-            f"field_size_zero_rate={field_size_zero.mean():.4%} > {args.max_field_size_zero_rate:.4%}"
+            "field_size_zero_rate="
+            f"{field_size_zero.mean():.4%} > {args.max_field_size_zero_rate:.4%}"
         )
     if float(class_code_missing.mean()) > args.max_class_code_missing_rate:
         gate_failures.append(
-            f"class_code_missing_rate={class_code_missing.mean():.4%} > {args.max_class_code_missing_rate:.4%}"
+            "class_code_missing_rate="
+            f"{class_code_missing.mean():.4%} > {args.max_class_code_missing_rate:.4%}"
         )
-    if len(n_runs_5_missing) and n_runs_5_missing_rate is not None and n_runs_5_missing_rate > args.max_n_runs5_missing_rate:
+    if (
+        len(n_runs_5_missing)
+        and n_runs_5_missing_rate is not None
+        and n_runs_5_missing_rate > args.max_n_runs5_missing_rate
+    ):
         gate_failures.append(
-            f"n_runs_5_missing_rate={n_runs_5_missing_rate:.4%} > {args.max_n_runs5_missing_rate:.4%}"
+            "n_runs_5_missing_rate="
+            f"{n_runs_5_missing_rate:.4%} > {args.max_n_runs5_missing_rate:.4%}"
         )
     if (
         len(n_sim_runs_5_missing)
@@ -277,10 +304,15 @@ def main() -> None:
             )
         if split.races_lt_min_horses > args.max_races_lt_min_horses:
             gate_failures.append(
-                f"{split.name}.races_lt_min_horses={split.races_lt_min_horses} > {args.max_races_lt_min_horses}"
+                f"{split.name}.races_lt_min_horses={split.races_lt_min_horses} "
+                f"> {args.max_races_lt_min_horses}"
             )
 
-    result["gate"] = {"enabled": bool(args.gate), "passed": len(gate_failures) == 0, "failures": gate_failures}
+    result["gate"] = {
+        "enabled": bool(args.gate),
+        "passed": len(gate_failures) == 0,
+        "failures": gate_failures,
+    }
 
     if args.json_output:
         out_path = Path(args.json_output)

@@ -670,8 +670,12 @@ def _add_condition_features(db: Database, df: pd.DataFrame) -> pd.DataFrame:
     SELECT
         run.horse_id,
         r.race_date,
-        LAG(r.distance_m) OVER (PARTITION BY run.horse_id ORDER BY r.race_date, run.race_id) as prev_distance_m,
-        LAG(r.race_date) OVER (PARTITION BY run.horse_id ORDER BY r.race_date, run.race_id) as prev_race_date
+        LAG(r.distance_m) OVER (
+            PARTITION BY run.horse_id ORDER BY r.race_date, run.race_id
+        ) AS prev_distance_m,
+        LAG(r.race_date) OVER (
+            PARTITION BY run.horse_id ORDER BY r.race_date, run.race_id
+        ) AS prev_race_date
     FROM core.runner run
     JOIN core.race r ON run.race_id = r.race_id
     WHERE r.track_code BETWEEN 1 AND 10
