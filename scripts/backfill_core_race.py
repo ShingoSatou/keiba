@@ -134,10 +134,13 @@ def backfill_core_race(
             continue
 
         try:
+            db.execute("SAVEPOINT upsert_race_sp")
             upsert_race(db, race)
+            db.execute("RELEASE SAVEPOINT upsert_race_sp")
             stats["upserted"] += 1
         except Exception:
-            db.connect().rollback()
+            db.execute("ROLLBACK TO SAVEPOINT upsert_race_sp")
+            db.execute("RELEASE SAVEPOINT upsert_race_sp")
             stats["errors"] += 1
             continue
 

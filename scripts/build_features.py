@@ -216,9 +216,7 @@ def build_run_index(
         "res.time_sec IS NOT NULL",
     ]
     params: list[date] = []
-    if from_date:
-        where_clauses.append("r.race_date >= %s")
-        params.append(from_date)
+    # from_date は保存範囲にのみ適用し、ベンチマーク計算の履歴は切らない
     if to_date:
         where_clauses.append("r.race_date <= %s")
         params.append(to_date)

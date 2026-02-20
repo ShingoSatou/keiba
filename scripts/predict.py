@@ -51,6 +51,10 @@ logger = logging.getLogger(__name__)
 MODEL_DIR = PROJECT_ROOT / "models"
 
 
+class ObstacleRaceNotSupportedError(ValueError):
+    """障害レースが予測対象外であることを示す例外。"""
+
+
 # =============================================================================
 # Pickle互換クラス
 # =============================================================================
@@ -306,7 +310,9 @@ def get_race_features(db: Database, race_id: int) -> pd.DataFrame:
     if not race:
         raise ValueError(f"レースが見つかりません: {race_id}")
     if race["surface"] == 3:
-        raise ValueError(f"障害レース(surface=3)は今回の予測対象外です: {race_id}")
+        raise ObstacleRaceNotSupportedError(
+            f"障害レース(surface=3)は今回の予測対象外です: {race_id}"
+        )
 
     race_date = race["race_date"]
     distance_bucket = distance_to_bucket(race["distance_m"])
@@ -523,7 +529,7 @@ def predict_race(
     # 特徴量取得
     try:
         df = get_race_features(db, race_id)
-    except ValueError as exc:
+    except ObstacleRaceNotSupportedError as exc:
         print(str(exc))
         return
 
