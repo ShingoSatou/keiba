@@ -66,7 +66,7 @@ def distance_to_bucket(distance_m: int) -> int:
 
 def going_to_bucket(going: int | None) -> int:
     """馬場状態をバケットに変換 (1:良系, 2:道悪系)"""
-    if going is None or going <= 2:
+    if going is None or pd.isna(going) or going <= 2:
         return 1  # 良系 (良, 稍重)
     return 2  # 道悪系 (重, 不良)
 
