@@ -237,3 +237,10 @@ docs/reports/backtest_*.md
 
 # 最適化結果 (繰り返し生成されるため除外)
 docs/reports/optimization_*.md
+
+# =============================================================================
+# Frontend (frontend/)
+# =============================================================================
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
