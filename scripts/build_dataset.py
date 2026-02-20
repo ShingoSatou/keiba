@@ -12,6 +12,10 @@ mart 層の特徴量を結合し、レース内相対特徴量・ペース圧特
 
 前提:
     build_features.py が実行済みであること
+
+注意:
+    ベースラインでは障害レース(surface=3)は対象外とする。
+    必要なら --include-obstacles で含める。
 """
 
 from __future__ import annotations
@@ -35,6 +39,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 DATA_DIR = PROJECT_ROOT / "data"
+DEFAULT_FROM_DATE = date(2016, 1, 1)
+DEFAULT_INCLUDE_OBSTACLES = False
 
 CK_FEATURE_COLUMNS = [
     "h_total_starts",
@@ -101,7 +107,7 @@ def distance_to_bucket(distance_m: int) -> int:
 
 def going_to_bucket(going: int | None) -> int:
     """馬場状態をバケットに変換"""
-    if going is None or going <= 2:
+    if going is None or pd.isna(going) or going <= 2:
         return 1  # 良系
     return 2  # 道悪系
 
@@ -111,11 +117,20 @@ def going_to_bucket(going: int | None) -> int:
 # =============================================================================
 
 
+def _surfaces_for_dataset(include_obstacles: bool) -> tuple[int, ...]:
+    return (1, 2, 3) if include_obstacles else (1, 2)
+
+
 def build_dataset(
-    db: Database, from_date: date | None = None, to_date: date | None = None
+    db: Database,
+    from_date: date | None = None,
+    to_date: date | None = None,
+    include_obstacles: bool = DEFAULT_INCLUDE_OBSTACLES,
 ) -> pd.DataFrame:
     """学習用データセットを生成"""
     logger.info("データセット生成開始...")
+    surfaces = _surfaces_for_dataset(include_obstacles)
+    surfaces_sql = ", ".join(map(str, surfaces))
 
     # 日付フィルタ
     date_filter = ""
@@ -150,8 +165,16 @@ def build_dataset(
     JOIN core.runner run ON r.race_id = run.race_id
     JOIN core.result res ON run.race_id = res.race_id AND run.horse_id = res.horse_id
     WHERE r.track_code BETWEEN 1 AND 10
+      AND r.surface IN ({surfaces_sql})
+      AND r.distance_m > 0
       AND run.scratch_flag = FALSE
       AND res.finish_pos IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM core.result res2
+        WHERE res2.race_id = r.race_id
+          AND res2.finish_pos = 1
+      )
       {date_filter}
     ORDER BY r.race_date, r.race_id, run.horse_no
     """
@@ -201,13 +224,31 @@ def build_dataset(
     base_df = _add_pace_features(base_df)
 
     # 当日コンディション特徴量を計算
-    base_df = _add_condition_features(db, base_df)
+    base_df = _add_condition_features(db, base_df, include_obstacles=include_obstacles)
 
     # 目的変数
     base_df["is_win"] = (base_df["finish_pos"] == 1).astype(int)
 
     logger.info(f"最終データセット: {len(base_df)} 件")
     return base_df
+
+
+def _filter_small_field_races(df: pd.DataFrame, min_horses: int) -> pd.DataFrame:
+    """最低頭数を満たさないレースを除外"""
+    if min_horses <= 1 or df.empty:
+        return df
+
+    race_sizes = df.groupby("race_id").size()
+    valid_races = race_sizes[race_sizes >= min_horses].index
+    dropped_races = len(race_sizes) - len(valid_races)
+    if dropped_races > 0:
+        logger.info(
+            "最低頭数フィルタ: %s 頭未満のレースを %s 件除外",
+            min_horses,
+            dropped_races,
+        )
+
+    return df[df["race_id"].isin(valid_races)].copy()
 
 
 def _join_horse_stats(db: Database, df: pd.DataFrame) -> pd.DataFrame:
@@ -634,20 +675,30 @@ def _add_pace_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _add_condition_features(db: Database, df: pd.DataFrame) -> pd.DataFrame:
+def _add_condition_features(
+    db: Database, df: pd.DataFrame, include_obstacles: bool = DEFAULT_INCLUDE_OBSTACLES
+) -> pd.DataFrame:
     """当日コンディション特徴量を計算"""
     logger.info("当日コンディション特徴量を計算中...")
+    surfaces = _surfaces_for_dataset(include_obstacles)
+    surfaces_sql = ", ".join(map(str, surfaces))
 
     # 前走情報を取得
-    prev_race_query = """
+    prev_race_query = f"""
     SELECT
         run.horse_id,
         r.race_date,
-        r.distance_m as prev_distance_m,
-        LAG(r.race_date) OVER (PARTITION BY run.horse_id ORDER BY r.race_date) as prev_race_date
+        LAG(r.distance_m) OVER (
+            PARTITION BY run.horse_id ORDER BY r.race_date, run.race_id
+        ) AS prev_distance_m,
+        LAG(r.race_date) OVER (
+            PARTITION BY run.horse_id ORDER BY r.race_date, run.race_id
+        ) AS prev_race_date
     FROM core.runner run
     JOIN core.race r ON run.race_id = r.race_id
     WHERE r.track_code BETWEEN 1 AND 10
+      AND r.surface IN ({surfaces_sql})
+      AND r.distance_m > 0
       AND run.scratch_flag = FALSE
     """
     prev_df = pd.DataFrame(db.fetch_all(prev_race_query))
@@ -686,9 +737,20 @@ def _add_condition_features(db: Database, df: pd.DataFrame) -> pd.DataFrame:
 
 def main():
     parser = argparse.ArgumentParser(description="学習データセット生成")
-    parser.add_argument("--from-date", type=str, help="開始日 (YYYY-MM-DD)")
+    parser.add_argument(
+        "--from-date",
+        type=str,
+        default=DEFAULT_FROM_DATE.isoformat(),
+        help=f"開始日 (YYYY-MM-DD, default: {DEFAULT_FROM_DATE.isoformat()})",
+    )
     parser.add_argument("--to-date", type=str, help="終了日 (YYYY-MM-DD)")
     parser.add_argument("--output", type=str, default="data/train.parquet", help="出力ファイル")
+    parser.add_argument("--min-horses", type=int, default=5, help="最低出走頭数")
+    parser.add_argument(
+        "--include-obstacles",
+        action="store_true",
+        help="障害レース(surface=3)を含める (デフォルト: 含めない)",
+    )
     args = parser.parse_args()
 
     from_date = None
@@ -709,11 +771,33 @@ def main():
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     with Database() as db:
-        df = build_dataset(db, from_date=from_date, to_date=to_date)
+        df = build_dataset(
+            db,
+            from_date=from_date,
+            to_date=to_date,
+            include_obstacles=args.include_obstacles,
+        )
 
     if df.empty:
         logger.error("データセットが空です")
         return
+
+    df = _filter_small_field_races(df, args.min_horses)
+    if df.empty:
+        logger.error("最低頭数フィルタ後にデータセットが空になりました")
+        return
+
+    if "class_code" in df.columns:
+        class_code = pd.to_numeric(df["class_code"], errors="coerce")
+        df["class_code"] = class_code.fillna(0).astype(int)
+    if "going" in df.columns:
+        going = pd.to_numeric(df["going"], errors="coerce")
+        going = going.where(going != 0)
+        df["going"] = going
+    if "field_size" in df.columns:
+        field_size = pd.to_numeric(df["field_size"], errors="coerce")
+        field_size = field_size.where(field_size != 0)
+        df["field_size"] = field_size
 
     # 特徴量カラムを選択
     feature_cols = [

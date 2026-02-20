@@ -79,13 +79,6 @@ FEATURE_COLS = [
     "finish_mean_3",
     "finish_best_5",
     "n_runs_5",
-    # 馬の適性 (条件近似版)
-    "speed_sim_mean_3",
-    "speed_sim_best_5",
-    "closing_sim_mean_3",
-    "closing_sim_best_5",
-    "early_sim_mean_3",
-    "n_sim_runs_5",
     # レース内相対
     "speed_best_5_z_inrace",
     "closing_best_5_z_inrace",
@@ -117,14 +110,6 @@ FEATURE_COLS = [
     "slop_days_since_last",
     "slop_count_28d",
     "slop_missing_flag",
-    "wood_last_total_4f_sec",
-    "wood_last_lap_4f_sec",
-    "wood_last_lap_1f_sec",
-    "wood_course",
-    "wood_direction",
-    "wood_days_since_last",
-    "wood_count_28d",
-    "wood_missing_flag",
     # CK
     "ck_h_total_starts",
     "ck_h_total_wins",
@@ -180,7 +165,7 @@ FEATURE_COLS = [
 ]
 
 # カテゴリカル特徴量
-CATEGORICAL_COLS = ["track_code", "surface", "going", "class_code", "wood_course", "wood_direction"]
+CATEGORICAL_COLS = ["track_code", "surface", "going", "class_code"]
 
 # 目的変数
 TARGET_COL = "is_win"

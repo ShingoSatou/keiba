@@ -4,6 +4,7 @@
 build_features.py / build_dataset.py の計算ロジックをテストする。
 """
 
+import math
 
 # =============================================================================
 # distance_to_bucket のテスト
@@ -60,7 +61,7 @@ class TestDistanceToBucket:
 
 def going_to_bucket(going: int | None) -> int:
     """馬場状態をバケットに変換 (scripts/build_features.py からコピー)"""
-    if going is None or going <= 2:
+    if going is None or math.isnan(going) or going <= 2:
         return 1  # 良系 (良, 稍重)
     return 2  # 道悪系 (重, 不良)
 
@@ -81,6 +82,10 @@ class TestGoingToBucket:
     def test_none_going(self):
         """欠損は良系扱い"""
         assert going_to_bucket(None) == 1
+
+    def test_nan_going(self):
+        """NaN も欠損として良系扱い"""
+        assert going_to_bucket(math.nan) == 1
 
 
 # =============================================================================

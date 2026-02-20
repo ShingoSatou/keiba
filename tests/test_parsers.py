@@ -12,6 +12,7 @@ from app.infrastructure.parsers import (
     RA_RACE_NAME_START,
     RA_RACE_NO_START,
     RA_START_TIME_START,
+    RA_STARTERS_START,
     RA_TRACK_CODE_START,
     RA_TRACK_TYPE_START,
     RA_TURF_GOING_START,
@@ -138,6 +139,59 @@ class TestRaceRecordParser:
         assert record.start_time is not None
         assert record.start_time.hour == 15
         assert record.start_time.minute == 40
+
+    def test_parse_normalizes_distance_and_zero_values(self):
+        b_payload = bytearray(b" " * 1200)
+
+        def put(offset: int, text: str):
+            b = text.encode("cp932")
+            b_payload[offset : offset + len(b)] = b
+
+        put(0, "RA1")
+        put(RA_YEAR_START, "2026")
+        put(RA_MONTHDAY_START, "0203")
+        put(RA_TRACK_CODE_START, "05")
+        put(RA_KAI_START, "05")
+        put(RA_NICHI_START, "11")
+        put(RA_RACE_NO_START, "12")
+        put(RA_DISTANCE_START, "0014")
+        put(RA_TRACK_TYPE_START, "10")
+        put(RA_WEATHER_START, "0")
+        put(RA_TURF_GOING_START, "0")
+        put(RA_FIELD_SIZE_START, "00")
+        put(RA_STARTERS_START, "16")
+
+        payload = bytes(b_payload).decode("cp932", errors="replace")
+        record = RaceRecord.parse(payload)
+
+        assert record.distance_m == 1400
+        assert record.weather is None
+        assert record.going is None
+        assert record.field_size == 16
+
+    def test_parse_uses_registered_field_size_when_starters_missing(self):
+        b_payload = bytearray(b" " * 1200)
+
+        def put(offset: int, text: str):
+            b = text.encode("cp932")
+            b_payload[offset : offset + len(b)] = b
+
+        put(0, "RA1")
+        put(RA_YEAR_START, "2026")
+        put(RA_MONTHDAY_START, "0203")
+        put(RA_TRACK_CODE_START, "05")
+        put(RA_KAI_START, "05")
+        put(RA_NICHI_START, "11")
+        put(RA_RACE_NO_START, "12")
+        put(RA_DISTANCE_START, "1600")
+        put(RA_TRACK_TYPE_START, "10")
+        put(RA_FIELD_SIZE_START, "18")
+        put(RA_STARTERS_START, "00")
+
+        payload = bytes(b_payload).decode("cp932", errors="replace")
+        record = RaceRecord.parse(payload)
+
+        assert record.field_size == 18
 
 
 class TestRunnerRecordParser:
@@ -727,3 +781,25 @@ class TestEventChangeRecordParser:
         assert rec.payload_parsed["distance_m_before"] == 1400
         assert rec.payload_parsed["track_type_before"] == 20
         assert rec.payload_parsed["reason_kbn"] == 1
+
+    def test_cc_normalizes_short_distance_scale(self):
+        b_payload = bytearray(b" " * 50)
+
+        def put(offset: int, s: str):
+            b = s.encode("cp932")
+            b_payload[offset : offset + len(b)] = b
+
+        put(0, "CC120260203")
+        put(11, "2026020305010101")
+        put(27, "02031234")
+        put(35, "0014")
+        put(39, "10")
+        put(41, "0017")
+        put(45, "20")
+        put(47, "1")
+
+        payload = b_payload.decode("cp932", errors="replace")
+        rec = EventChangeRecord.parse(payload)
+
+        assert rec.payload_parsed["distance_m_after"] == 1400
+        assert rec.payload_parsed["distance_m_before"] == 1700

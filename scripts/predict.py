@@ -51,6 +51,10 @@ logger = logging.getLogger(__name__)
 MODEL_DIR = PROJECT_ROOT / "models"
 
 
+class ObstacleRaceNotSupportedError(ValueError):
+    """障害レースが予測対象外であることを示す例外。"""
+
+
 # =============================================================================
 # Pickle互換クラス
 # =============================================================================
@@ -151,12 +155,6 @@ FEATURE_COLS = [
     "finish_mean_3",
     "finish_best_5",
     "n_runs_5",
-    "speed_sim_mean_3",
-    "speed_sim_best_5",
-    "closing_sim_mean_3",
-    "closing_sim_best_5",
-    "early_sim_mean_3",
-    "n_sim_runs_5",
     "speed_best_5_z_inrace",
     "closing_best_5_z_inrace",
     "early_mean_3_z_inrace",
@@ -183,14 +181,6 @@ FEATURE_COLS = [
     "slop_days_since_last",
     "slop_count_28d",
     "slop_missing_flag",
-    "wood_last_total_4f_sec",
-    "wood_last_lap_4f_sec",
-    "wood_last_lap_1f_sec",
-    "wood_course",
-    "wood_direction",
-    "wood_days_since_last",
-    "wood_count_28d",
-    "wood_missing_flag",
     "ck_h_total_starts",
     "ck_h_total_wins",
     "ck_h_total_top3",
@@ -319,6 +309,10 @@ def get_race_features(db: Database, race_id: int) -> pd.DataFrame:
     race = db.fetch_one(race_query, (race_id,))
     if not race:
         raise ValueError(f"レースが見つかりません: {race_id}")
+    if race["surface"] == 3:
+        raise ObstacleRaceNotSupportedError(
+            f"障害レース(surface=3)は今回の予測対象外です: {race_id}"
+        )
 
     race_date = race["race_date"]
     distance_bucket = distance_to_bucket(race["distance_m"])
@@ -533,7 +527,11 @@ def predict_race(
     model, calibrator, feature_names = load_model()
 
     # 特徴量取得
-    df = get_race_features(db, race_id)
+    try:
+        df = get_race_features(db, race_id)
+    except ObstacleRaceNotSupportedError as exc:
+        print(str(exc))
+        return
 
     # 学習時のfeature_namesに合わせて列順を固定（不足列はNaNで補完）
     missing_features = [c for c in feature_names if c not in df.columns]
