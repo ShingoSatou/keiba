@@ -12,6 +12,10 @@ mart 層の特徴量を結合し、レース内相対特徴量・ペース圧特
 
 前提:
     build_features.py が実行済みであること
+
+注意:
+    ベースラインでは障害レース(surface=3)は対象外とする。
+    必要なら --include-obstacles で含める。
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ logger = logging.getLogger(__name__)
 
 DATA_DIR = PROJECT_ROOT / "data"
 DEFAULT_FROM_DATE = date(2016, 1, 1)
+DEFAULT_INCLUDE_OBSTACLES = False
 
 CK_FEATURE_COLUMNS = [
     "h_total_starts",
@@ -112,11 +117,20 @@ def going_to_bucket(going: int | None) -> int:
 # =============================================================================
 
 
+def _surfaces_for_dataset(include_obstacles: bool) -> tuple[int, ...]:
+    return (1, 2, 3) if include_obstacles else (1, 2)
+
+
 def build_dataset(
-    db: Database, from_date: date | None = None, to_date: date | None = None
+    db: Database,
+    from_date: date | None = None,
+    to_date: date | None = None,
+    include_obstacles: bool = DEFAULT_INCLUDE_OBSTACLES,
 ) -> pd.DataFrame:
     """学習用データセットを生成"""
     logger.info("データセット生成開始...")
+    surfaces = _surfaces_for_dataset(include_obstacles)
+    surfaces_sql = ", ".join(map(str, surfaces))
 
     # 日付フィルタ
     date_filter = ""
@@ -151,7 +165,7 @@ def build_dataset(
     JOIN core.runner run ON r.race_id = run.race_id
     JOIN core.result res ON run.race_id = res.race_id AND run.horse_id = res.horse_id
     WHERE r.track_code BETWEEN 1 AND 10
-      AND r.surface IN (1, 2, 3)
+      AND r.surface IN ({surfaces_sql})
       AND r.distance_m > 0
       AND run.scratch_flag = FALSE
       AND res.finish_pos IS NOT NULL
@@ -210,7 +224,7 @@ def build_dataset(
     base_df = _add_pace_features(base_df)
 
     # 当日コンディション特徴量を計算
-    base_df = _add_condition_features(db, base_df)
+    base_df = _add_condition_features(db, base_df, include_obstacles=include_obstacles)
 
     # 目的変数
     base_df["is_win"] = (base_df["finish_pos"] == 1).astype(int)
@@ -661,12 +675,16 @@ def _add_pace_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _add_condition_features(db: Database, df: pd.DataFrame) -> pd.DataFrame:
+def _add_condition_features(
+    db: Database, df: pd.DataFrame, include_obstacles: bool = DEFAULT_INCLUDE_OBSTACLES
+) -> pd.DataFrame:
     """当日コンディション特徴量を計算"""
     logger.info("当日コンディション特徴量を計算中...")
+    surfaces = _surfaces_for_dataset(include_obstacles)
+    surfaces_sql = ", ".join(map(str, surfaces))
 
     # 前走情報を取得
-    prev_race_query = """
+    prev_race_query = f"""
     SELECT
         run.horse_id,
         r.race_date,
@@ -679,6 +697,8 @@ def _add_condition_features(db: Database, df: pd.DataFrame) -> pd.DataFrame:
     FROM core.runner run
     JOIN core.race r ON run.race_id = r.race_id
     WHERE r.track_code BETWEEN 1 AND 10
+      AND r.surface IN ({surfaces_sql})
+      AND r.distance_m > 0
       AND run.scratch_flag = FALSE
     """
     prev_df = pd.DataFrame(db.fetch_all(prev_race_query))
@@ -726,6 +746,11 @@ def main():
     parser.add_argument("--to-date", type=str, help="終了日 (YYYY-MM-DD)")
     parser.add_argument("--output", type=str, default="data/train.parquet", help="出力ファイル")
     parser.add_argument("--min-horses", type=int, default=5, help="最低出走頭数")
+    parser.add_argument(
+        "--include-obstacles",
+        action="store_true",
+        help="障害レース(surface=3)を含める (デフォルト: 含めない)",
+    )
     args = parser.parse_args()
 
     from_date = None
@@ -746,7 +771,12 @@ def main():
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     with Database() as db:
-        df = build_dataset(db, from_date=from_date, to_date=to_date)
+        df = build_dataset(
+            db,
+            from_date=from_date,
+            to_date=to_date,
+            include_obstacles=args.include_obstacles,
+        )
 
     if df.empty:
         logger.error("データセットが空です")

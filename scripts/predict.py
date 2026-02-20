@@ -305,6 +305,8 @@ def get_race_features(db: Database, race_id: int) -> pd.DataFrame:
     race = db.fetch_one(race_query, (race_id,))
     if not race:
         raise ValueError(f"レースが見つかりません: {race_id}")
+    if race["surface"] == 3:
+        raise ValueError(f"障害レース(surface=3)は今回の予測対象外です: {race_id}")
 
     race_date = race["race_date"]
     distance_bucket = distance_to_bucket(race["distance_m"])
@@ -519,7 +521,11 @@ def predict_race(
     model, calibrator, feature_names = load_model()
 
     # 特徴量取得
-    df = get_race_features(db, race_id)
+    try:
+        df = get_race_features(db, race_id)
+    except ValueError as exc:
+        print(str(exc))
+        return
 
     # 学習時のfeature_namesに合わせて列順を固定（不足列はNaNで補完）
     missing_features = [c for c in feature_names if c not in df.columns]

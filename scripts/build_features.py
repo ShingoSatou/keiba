@@ -14,6 +14,7 @@ core テーブルから mart テーブルに特徴量を生成する。
 オプション:
     --rebuild    全データを再構築 (デフォルト: 増分更新)
     --date       特定日のみ処理 (例: --date 2026-01-01)
+    --include-obstacles  障害レース(surface=3)も対象に含める (デフォルト: 含めない)
 """
 
 from __future__ import annotations
@@ -49,6 +50,7 @@ DISTANCE_BUCKETS = [1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 3000, 
 
 # グループ統計の最小サンプル数
 MIN_SAMPLE_COUNT = 200
+DEFAULT_INCLUDE_OBSTACLES = False
 
 
 # =============================================================================
@@ -98,6 +100,10 @@ def is_similar_condition(
 # =============================================================================
 # Helper Functions for Feature Engineering
 # =============================================================================
+
+
+def _surfaces_for_features(include_obstacles: bool) -> tuple[int, ...]:
+    return (1, 2, 3) if include_obstacles else (1, 2)
 
 
 def calculate_benchmark_stats(
@@ -191,6 +197,7 @@ def build_run_index(
     rebuild: bool = False,
     from_date: date | None = None,
     to_date: date | None = None,
+    include_obstacles: bool = DEFAULT_INCLUDE_OBSTACLES,
 ) -> int:
     """1走ごとの基礎指標を計算して mart.run_index に保存 (時系列シーケンシャル更新)"""
     logger.info("Step 2: run_index を計算中 (EWM + Shrinkage)...")
@@ -199,9 +206,11 @@ def build_run_index(
     # ※ target_date が指定されていても、過去からの推移が必要なため全件計算する
     #   (ただし保存処理は対象日以降のみにするなどで最適化可能だが、今回はシンプルに全件UPSERTする)
 
+    surfaces = _surfaces_for_features(include_obstacles)
+    surfaces_sql = ", ".join(map(str, surfaces))
     where_clauses = [
         "r.track_code BETWEEN 1 AND 10",
-        "r.surface IN (1, 2, 3)",
+        f"r.surface IN ({surfaces_sql})",
         "r.distance_m > 0",
         "res.finish_pos IS NOT NULL",
         "res.time_sec IS NOT NULL",
@@ -398,6 +407,7 @@ def build_horse_stats(
     rebuild: bool = False,
     from_date: date | None = None,
     to_date: date | None = None,
+    include_obstacles: bool = DEFAULT_INCLUDE_OBSTACLES,
 ) -> int:
     """馬単位の近走集計を計算して mart.horse_stats に保存"""
     logger.info("Step 3: horse_stats を計算中...")
@@ -407,9 +417,11 @@ def build_horse_stats(
         target_dates = [target_date]
     else:
         # 全レース日を取得
+        surfaces = _surfaces_for_features(include_obstacles)
+        surfaces_sql = ", ".join(map(str, surfaces))
         where_clauses = [
             "track_code BETWEEN 1 AND 10",
-            "surface IN (1, 2, 3)",
+            f"surface IN ({surfaces_sql})",
             "distance_m > 0",
         ]
         params: list[date] = []
@@ -442,7 +454,7 @@ def build_horse_stats(
 
     count = 0
     for i, calc_date in enumerate(target_dates):
-        count += _build_horse_stats_for_date(db, calc_date)
+        count += _build_horse_stats_for_date(db, calc_date, include_obstacles=include_obstacles)
         # 進捗ログ (100日ごと)
         if (i + 1) % 100 == 0:
             logger.info(f"  進捗: {i + 1}/{len(target_dates)} 日完了 ({count:,} 件)")
@@ -451,10 +463,14 @@ def build_horse_stats(
     return count
 
 
-def _build_horse_stats_for_date(db: Database, calc_date: date) -> int:
+def _build_horse_stats_for_date(
+    db: Database, calc_date: date, include_obstacles: bool = DEFAULT_INCLUDE_OBSTACLES
+) -> int:
     """特定日の horse_stats を計算"""
+    surfaces = _surfaces_for_features(include_obstacles)
+    surfaces_sql = ", ".join(map(str, surfaces))
     # その日に出走する馬とレース条件を取得
-    runners_query = """
+    runners_query = f"""
     SELECT DISTINCT
         run.horse_id,
         r.surface,
@@ -464,7 +480,7 @@ def _build_horse_stats_for_date(db: Database, calc_date: date) -> int:
     JOIN core.race r ON run.race_id = r.race_id
     WHERE r.race_date = %s
       AND r.track_code BETWEEN 1 AND 10
-      AND r.surface IN (1, 2, 3)
+      AND r.surface IN ({surfaces_sql})
       AND r.distance_m > 0
       AND run.scratch_flag = FALSE
     """
@@ -497,7 +513,7 @@ def _build_horse_stats_for_date(db: Database, calc_date: date) -> int:
     LEFT JOIN mart.run_index ri ON run.race_id = ri.race_id AND run.horse_id = ri.horse_id
     WHERE r.race_date < %s
       AND r.track_code BETWEEN 1 AND 10
-      AND r.surface IN (1, 2, 3)
+      AND r.surface IN ({surfaces_sql})
       AND r.distance_m > 0
       AND res.finish_pos IS NOT NULL
       AND run.horse_id IN ({placeholders})
@@ -719,6 +735,7 @@ def build_person_stats(
     rebuild: bool = False,
     from_date: date | None = None,
     to_date: date | None = None,
+    include_obstacles: bool = DEFAULT_INCLUDE_OBSTACLES,
 ) -> int:
     """騎手・調教師の過去実績を計算して mart.person_stats に保存"""
     logger.info("Step 4: person_stats を計算中...")
@@ -727,9 +744,11 @@ def build_person_stats(
     if target_date:
         target_dates = [target_date]
     else:
+        surfaces = _surfaces_for_features(include_obstacles)
+        surfaces_sql = ", ".join(map(str, surfaces))
         where_clauses = [
             "track_code BETWEEN 1 AND 10",
-            "surface IN (1, 2, 3)",
+            f"surface IN ({surfaces_sql})",
             "distance_m > 0",
         ]
         params: list[date] = []
@@ -766,7 +785,9 @@ def build_person_stats(
     logger.info(f"実績データ取得中: {min_date} ~ {max_date}")
 
     # 騎手の日別成績を一括取得
-    jockey_daily_query = """
+    surfaces = _surfaces_for_features(include_obstacles)
+    surfaces_sql = ", ".join(map(str, surfaces))
+    jockey_daily_query = f"""
     SELECT
         r.race_date,
         run.jockey_id as person_id,
@@ -778,7 +799,7 @@ def build_person_stats(
     JOIN core.result res ON run.race_id = res.race_id AND run.horse_id = res.horse_id
     WHERE r.race_date >= %s AND r.race_date < %s
       AND r.track_code BETWEEN 1 AND 10
-      AND r.surface IN (1, 2, 3)
+      AND r.surface IN ({surfaces_sql})
       AND r.distance_m > 0
       AND run.jockey_id IS NOT NULL
       AND res.finish_pos IS NOT NULL
@@ -788,7 +809,7 @@ def build_person_stats(
     logger.info(f"騎手日別成績: {len(jockey_daily)} 件")
 
     # 調教師の日別成績を一括取得
-    trainer_daily_query = """
+    trainer_daily_query = f"""
     SELECT
         r.race_date,
         run.trainer_id as person_id,
@@ -800,7 +821,7 @@ def build_person_stats(
     JOIN core.result res ON run.race_id = res.race_id AND run.horse_id = res.horse_id
     WHERE r.race_date >= %s AND r.race_date < %s
       AND r.track_code BETWEEN 1 AND 10
-      AND r.surface IN (1, 2, 3)
+      AND r.surface IN ({surfaces_sql})
       AND r.distance_m > 0
       AND run.trainer_id IS NOT NULL
       AND res.finish_pos IS NOT NULL
@@ -905,6 +926,11 @@ def main():
     )
     parser.add_argument("--to-date", type=str, help="終了日 (YYYY-MM-DD)")
     parser.add_argument("--step", type=int, help="特定ステップのみ実行 (1-4)")
+    parser.add_argument(
+        "--include-obstacles",
+        action="store_true",
+        help="障害レース(surface=3)を含める (デフォルト: 含めない)",
+    )
     args = parser.parse_args()
 
     target_date = None
@@ -930,6 +956,7 @@ def main():
                 rebuild=args.rebuild,
                 from_date=from_date,
                 to_date=to_date,
+                include_obstacles=args.include_obstacles,
             )
 
         if args.step is None or args.step == 3:
@@ -939,6 +966,7 @@ def main():
                 rebuild=args.rebuild,
                 from_date=from_date,
                 to_date=to_date,
+                include_obstacles=args.include_obstacles,
             )
 
         if args.step is None or args.step == 4:
@@ -948,6 +976,7 @@ def main():
                 rebuild=args.rebuild,
                 from_date=from_date,
                 to_date=to_date,
+                include_obstacles=args.include_obstacles,
             )
 
     logger.info("全ステップ完了")
