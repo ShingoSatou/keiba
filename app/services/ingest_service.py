@@ -122,13 +122,18 @@ class IngestService:
                 END,
                 distance_m = CASE
                     WHEN EXCLUDED.distance_m > 0
-                        AND (core.race.distance_m = 0 OR core.race.distance_m IS NULL)
+                        AND (
+                            core.race.distance_m = 0
+                            OR core.race.distance_m IS NULL
+                            OR core.race.distance_m < 800
+                        )
                     THEN EXCLUDED.distance_m
                     ELSE core.race.distance_m
                 END,
-                going = EXCLUDED.going,
-                weather = EXCLUDED.weather,
-                field_size = EXCLUDED.field_size,
+                going = COALESCE(EXCLUDED.going, NULLIF(core.race.going, 0)),
+                weather = COALESCE(EXCLUDED.weather, NULLIF(core.race.weather, 0)),
+                class_code = COALESCE(core.race.class_code, EXCLUDED.class_code, 0),
+                field_size = COALESCE(EXCLUDED.field_size, NULLIF(core.race.field_size, 0)),
                 start_time = COALESCE(EXCLUDED.start_time, core.race.start_time),
                 updated_at = now()
         """

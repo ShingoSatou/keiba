@@ -87,13 +87,16 @@ uv run python scripts/load_to_db.py --input-dir data/
 ### 3. 特徴量生成
 ```bash
 # 特徴量を計算してDB (martスキーマ) に保存
-uv run python scripts/build_features.py
+uv run python scripts/build_features.py --rebuild --from-date 2016-01-01
 ```
 
 ### 4. 学習データセット作成
 ```bash
 # DBからデータを取得し、学習用ファイル (data/train.parquet) を生成
-uv run python scripts/build_dataset.py
+uv run python scripts/build_dataset.py --from-date 2016-01-01 --min-horses 5 --output data/train.parquet
+
+# 品質ゲート（閾値違反時は exit 1）
+uv run python scripts/check_dataset_quality.py --input data/train.parquet --gate --json-output data/quality/train_latest.json
 ```
 
 ### 5. モデル学習

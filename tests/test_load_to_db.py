@@ -299,7 +299,11 @@ def test_upsert_race_updates_stub_surface_and_distance():
 
     assert "surface = CASE" in db.sql
     assert "distance_m = CASE" in db.sql
+    assert "core.race.distance_m < 800" in db.sql
     assert "core.race.start_time IS NULL" in db.sql
+    assert "class_code = COALESCE(core.race.class_code, EXCLUDED.class_code, 0)" in db.sql
+    assert "going = COALESCE(EXCLUDED.going, NULLIF(core.race.going, 0))" in db.sql
+    assert "field_size = COALESCE(EXCLUDED.field_size, NULLIF(core.race.field_size, 0))" in db.sql
     assert "start_time = COALESCE(EXCLUDED.start_time, core.race.start_time)" in db.sql
     assert db.params["surface"] == 1
     assert db.params["distance_m"] == 1600

@@ -185,7 +185,13 @@ def build_time_stats(db: Database) -> int:
 # =============================================================================
 
 
-def build_run_index(db: Database, target_date: date | None = None, rebuild: bool = False) -> int:
+def build_run_index(
+    db: Database,
+    target_date: date | None = None,
+    rebuild: bool = False,
+    from_date: date | None = None,
+    to_date: date | None = None,
+) -> int:
     """1走ごとの基礎指標を計算して mart.run_index に保存 (時系列シーケンシャル更新)"""
     logger.info("Step 2: run_index を計算中 (EWM + Shrinkage)...")
 
@@ -193,7 +199,23 @@ def build_run_index(db: Database, target_date: date | None = None, rebuild: bool
     # ※ target_date が指定されていても、過去からの推移が必要なため全件計算する
     #   (ただし保存処理は対象日以降のみにするなどで最適化可能だが、今回はシンプルに全件UPSERTする)
 
-    query = """
+    where_clauses = [
+        "r.track_code BETWEEN 1 AND 10",
+        "r.surface IN (1, 2, 3)",
+        "r.distance_m > 0",
+        "res.finish_pos IS NOT NULL",
+        "res.time_sec IS NOT NULL",
+    ]
+    params: list[date] = []
+    if from_date:
+        where_clauses.append("r.race_date >= %s")
+        params.append(from_date)
+    if to_date:
+        where_clauses.append("r.race_date <= %s")
+        params.append(to_date)
+    where_sql = " AND ".join(where_clauses)
+
+    query = f"""
     SELECT
         r.race_id,
         r.race_date,
@@ -208,12 +230,10 @@ def build_run_index(db: Database, target_date: date | None = None, rebuild: bool
         res.corner4_pos
     FROM core.race r
     JOIN core.result res ON r.race_id = res.race_id
-    WHERE r.track_code BETWEEN 1 AND 10
-      AND res.finish_pos IS NOT NULL
-      AND res.time_sec IS NOT NULL
+    WHERE {where_sql}
     ORDER BY r.race_date, r.race_id
     """
-    rows = db.fetch_all(query)
+    rows = db.fetch_all(query, tuple(params) if params else None)
 
     if not rows:
         logger.warning("Step 2: レースデータがありません")
@@ -292,12 +312,15 @@ def build_run_index(db: Database, target_date: date | None = None, rebuild: bool
     # 過去の集計値が変わる可能性があるため、本来は全件更新すべき。
     # しかしパフォーマンスを考慮し、target_date があればその日以降、なければ全件とする。
 
+    save_df = df
     if target_date:
-        save_df = df[df["race_date"] >= target_date]
-        logger.info(f"保存対象: {target_date} 以降 ({len(save_df)} 件)")
-    else:
-        save_df = df
-        logger.info(f"保存対象: 全期間 ({len(save_df)} 件)")
+        save_df = save_df[save_df["race_date"] >= target_date]
+    if from_date:
+        save_df = save_df[save_df["race_date"] >= from_date]
+    if to_date:
+        save_df = save_df[save_df["race_date"] <= to_date]
+
+    logger.info(f"保存対象: {len(save_df)} 件")
 
     if save_df.empty:
         return 0
@@ -369,7 +392,13 @@ def calc_trend(values: list) -> float | None:
     return float(slope)
 
 
-def build_horse_stats(db: Database, target_date: date | None = None, rebuild: bool = False) -> int:
+def build_horse_stats(
+    db: Database,
+    target_date: date | None = None,
+    rebuild: bool = False,
+    from_date: date | None = None,
+    to_date: date | None = None,
+) -> int:
     """馬単位の近走集計を計算して mart.horse_stats に保存"""
     logger.info("Step 3: horse_stats を計算中...")
 
@@ -378,13 +407,27 @@ def build_horse_stats(db: Database, target_date: date | None = None, rebuild: bo
         target_dates = [target_date]
     else:
         # 全レース日を取得
-        dates_query = """
+        where_clauses = [
+            "track_code BETWEEN 1 AND 10",
+            "surface IN (1, 2, 3)",
+            "distance_m > 0",
+        ]
+        params: list[date] = []
+        if from_date:
+            where_clauses.append("race_date >= %s")
+            params.append(from_date)
+        if to_date:
+            where_clauses.append("race_date <= %s")
+            params.append(to_date)
+        where_sql = " AND ".join(where_clauses)
+
+        dates_query = f"""
         SELECT DISTINCT race_date
         FROM core.race
-        WHERE track_code BETWEEN 1 AND 10
+        WHERE {where_sql}
         ORDER BY race_date
         """
-        target_dates = [row["race_date"] for row in db.fetch_all(dates_query)]
+        target_dates = [row["race_date"] for row in db.fetch_all(dates_query, tuple(params))]
 
     if not target_dates:
         logger.warning("対象日がありません")
@@ -421,6 +464,8 @@ def _build_horse_stats_for_date(db: Database, calc_date: date) -> int:
     JOIN core.race r ON run.race_id = r.race_id
     WHERE r.race_date = %s
       AND r.track_code BETWEEN 1 AND 10
+      AND r.surface IN (1, 2, 3)
+      AND r.distance_m > 0
       AND run.scratch_flag = FALSE
     """
     runners = db.fetch_all(runners_query, (calc_date,))
@@ -452,6 +497,8 @@ def _build_horse_stats_for_date(db: Database, calc_date: date) -> int:
     LEFT JOIN mart.run_index ri ON run.race_id = ri.race_id AND run.horse_id = ri.horse_id
     WHERE r.race_date < %s
       AND r.track_code BETWEEN 1 AND 10
+      AND r.surface IN (1, 2, 3)
+      AND r.distance_m > 0
       AND res.finish_pos IS NOT NULL
       AND run.horse_id IN ({placeholders})
     """
@@ -666,7 +713,13 @@ def _insert_horse_stats(
 # =============================================================================
 
 
-def build_person_stats(db: Database, target_date: date | None = None, rebuild: bool = False) -> int:
+def build_person_stats(
+    db: Database,
+    target_date: date | None = None,
+    rebuild: bool = False,
+    from_date: date | None = None,
+    to_date: date | None = None,
+) -> int:
     """騎手・調教師の過去実績を計算して mart.person_stats に保存"""
     logger.info("Step 4: person_stats を計算中...")
 
@@ -674,13 +727,27 @@ def build_person_stats(db: Database, target_date: date | None = None, rebuild: b
     if target_date:
         target_dates = [target_date]
     else:
-        dates_query = """
+        where_clauses = [
+            "track_code BETWEEN 1 AND 10",
+            "surface IN (1, 2, 3)",
+            "distance_m > 0",
+        ]
+        params: list[date] = []
+        if from_date:
+            where_clauses.append("race_date >= %s")
+            params.append(from_date)
+        if to_date:
+            where_clauses.append("race_date <= %s")
+            params.append(to_date)
+        where_sql = " AND ".join(where_clauses)
+
+        dates_query = f"""
         SELECT DISTINCT race_date
         FROM core.race
-        WHERE track_code BETWEEN 1 AND 10
+        WHERE {where_sql}
         ORDER BY race_date
         """
-        target_dates = [row["race_date"] for row in db.fetch_all(dates_query)]
+        target_dates = [row["race_date"] for row in db.fetch_all(dates_query, tuple(params))]
 
     if not target_dates:
         logger.warning("対象日がありません")
@@ -711,6 +778,8 @@ def build_person_stats(db: Database, target_date: date | None = None, rebuild: b
     JOIN core.result res ON run.race_id = res.race_id AND run.horse_id = res.horse_id
     WHERE r.race_date >= %s AND r.race_date < %s
       AND r.track_code BETWEEN 1 AND 10
+      AND r.surface IN (1, 2, 3)
+      AND r.distance_m > 0
       AND run.jockey_id IS NOT NULL
       AND res.finish_pos IS NOT NULL
     GROUP BY r.race_date, run.jockey_id
@@ -731,6 +800,8 @@ def build_person_stats(db: Database, target_date: date | None = None, rebuild: b
     JOIN core.result res ON run.race_id = res.race_id AND run.horse_id = res.horse_id
     WHERE r.race_date >= %s AND r.race_date < %s
       AND r.track_code BETWEEN 1 AND 10
+      AND r.surface IN (1, 2, 3)
+      AND r.distance_m > 0
       AND run.trainer_id IS NOT NULL
       AND res.finish_pos IS NOT NULL
     GROUP BY r.race_date, run.trainer_id
@@ -826,27 +897,58 @@ def main():
     parser = argparse.ArgumentParser(description="特徴量生成バッチ")
     parser.add_argument("--rebuild", action="store_true", help="全データを再構築")
     parser.add_argument("--date", type=str, help="特定日のみ処理 (YYYY-MM-DD)")
+    parser.add_argument(
+        "--from-date",
+        type=str,
+        default="2016-01-01",
+        help="開始日 (YYYY-MM-DD, default: 2016-01-01)",
+    )
+    parser.add_argument("--to-date", type=str, help="終了日 (YYYY-MM-DD)")
     parser.add_argument("--step", type=int, help="特定ステップのみ実行 (1-4)")
     args = parser.parse_args()
 
     target_date = None
-    if args.date:
-        from datetime import datetime
+    from_date = None
+    to_date = None
+    from datetime import datetime
 
+    if args.date:
         target_date = datetime.strptime(args.date, "%Y-%m-%d").date()
+    if args.from_date:
+        from_date = datetime.strptime(args.from_date, "%Y-%m-%d").date()
+    if args.to_date:
+        to_date = datetime.strptime(args.to_date, "%Y-%m-%d").date()
 
     with Database() as db:
         if args.step is None or args.step == 1:
             build_time_stats(db)
 
         if args.step is None or args.step == 2:
-            build_run_index(db, target_date=target_date, rebuild=args.rebuild)
+            build_run_index(
+                db,
+                target_date=target_date,
+                rebuild=args.rebuild,
+                from_date=from_date,
+                to_date=to_date,
+            )
 
         if args.step is None or args.step == 3:
-            build_horse_stats(db, target_date=target_date, rebuild=args.rebuild)
+            build_horse_stats(
+                db,
+                target_date=target_date,
+                rebuild=args.rebuild,
+                from_date=from_date,
+                to_date=to_date,
+            )
 
         if args.step is None or args.step == 4:
-            build_person_stats(db, target_date=target_date, rebuild=args.rebuild)
+            build_person_stats(
+                db,
+                target_date=target_date,
+                rebuild=args.rebuild,
+                from_date=from_date,
+                to_date=to_date,
+            )
 
     logger.info("全ステップ完了")
 

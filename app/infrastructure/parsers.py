@@ -136,6 +136,15 @@ def _slice_byte_maskable_int(data: bytes, start: int, length: int) -> int | None
     return int(digits)
 
 
+def _normalize_distance_m(distance_m: int | None) -> int | None:
+    """距離(m)の異常スケールを補正する"""
+    if distance_m is None or distance_m <= 0:
+        return distance_m
+    if distance_m < 100:
+        return distance_m * 100
+    return distance_m
+
+
 def _slice_byte_time(data: bytes, start: int, length: int = 4) -> time | None:
     """バイト列から時刻(HHMM)を取得"""
     s = _slice_byte_decode(data, start, length)
@@ -226,10 +235,10 @@ class RaceRecord:
     race_no: int  # レース番号 (1-12)
     surface: int  # 1:芝, 2:ダート, 3:障害
     distance_m: int  # 距離 (m)
-    going: int  # 馬場状態
-    weather: int  # 天候
+    going: int | None  # 馬場状態
+    weather: int | None  # 天候
     class_code: int  # クラス
-    field_size: int  # 頭数
+    field_size: int | None  # 頭数
     start_time: time | None  # 発走時刻
     turn_dir: int | None  # 回り (1:右, 2:左, 3:直線)
     course_inout: int | None  # コース区分
@@ -268,15 +277,19 @@ class RaceRecord:
         elif 51 <= track_type_code <= 59:
             surface = 3  # 障害
 
-        distance_m = _slice_byte_int(b_payload, RA_DISTANCE_START, RA_DISTANCE_LEN)
+        distance_m = _normalize_distance_m(_slice_byte_int(b_payload, RA_DISTANCE_START, RA_DISTANCE_LEN))
 
         # 馬場状態 (芝 or ダート)
         if surface == 1:
             going = _slice_byte_int(b_payload, RA_TURF_GOING_START, RA_TURF_GOING_LEN)
         else:
             going = _slice_byte_int(b_payload, RA_DIRT_GOING_START, RA_DIRT_GOING_LEN)
+        if going <= 0:
+            going = None
 
         weather = _slice_byte_int(b_payload, RA_WEATHER_START, RA_WEATHER_LEN)
+        if weather <= 0:
+            weather = None
 
         # クラスコード・回りは一旦未取得（必要なら定義追加）
         class_code = 0
@@ -286,7 +299,14 @@ class RaceRecord:
         course_str = _slice_byte_decode(b_payload, RA_COURSE_START, RA_COURSE_LEN)
         course_inout = int(course_str) if course_str.isdigit() else 0
 
-        field_size = _slice_byte_int(b_payload, RA_FIELD_SIZE_START, RA_FIELD_SIZE_LEN)
+        registered_field_size = _slice_byte_int(b_payload, RA_FIELD_SIZE_START, RA_FIELD_SIZE_LEN)
+        starters = _slice_byte_int(b_payload, RA_STARTERS_START, RA_STARTERS_LEN)
+        if starters > 0:
+            field_size = starters
+        elif registered_field_size > 0:
+            field_size = registered_field_size
+        else:
+            field_size = None
         start_time = _slice_byte_time(b_payload, RA_START_TIME_START, RA_START_TIME_LEN)
 
         # race_id を生成
@@ -2129,12 +2149,14 @@ class EventChangeRecord:
                 }
             )
         elif rec_type == "CC":
+            distance_after = _normalize_distance_m(_slice_byte_int(b_payload, 35, 4))
+            distance_before = _normalize_distance_m(_slice_byte_int(b_payload, 41, 4))
             payload_parsed.update(
                 {
                     "announce_mmddhhmi": announce_mmddhhmi,
-                    "distance_m_after": _slice_byte_int(b_payload, 35, 4),  # pos36
+                    "distance_m_after": distance_after,  # pos36
                     "track_type_after": _slice_byte_int(b_payload, 39, 2),  # pos40
-                    "distance_m_before": _slice_byte_int(b_payload, 41, 4),  # pos42
+                    "distance_m_before": distance_before,  # pos42
                     "track_type_before": _slice_byte_int(b_payload, 45, 2),  # pos46
                     "reason_kbn": _slice_byte_int(b_payload, 47, 1),  # pos48
                 }
