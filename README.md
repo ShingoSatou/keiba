@@ -87,12 +87,14 @@ uv run python scripts/load_to_db.py --input-dir data/
 ### 3. 特徴量生成
 ```bash
 # 特徴量を計算してDB (martスキーマ) に保存
+# デフォルト: 障害レース(surface=3)は除外（含める場合は --include-obstacles）
 uv run python scripts/build_features.py --rebuild --from-date 2016-01-01
 ```
 
 ### 4. 学習データセット作成
 ```bash
 # DBからデータを取得し、学習用ファイル (data/train.parquet) を生成
+# デフォルト: 障害レース(surface=3)は除外（含める場合は --include-obstacles）
 uv run python scripts/build_dataset.py --from-date 2016-01-01 --min-horses 5 --output data/train.parquet
 
 # 品質ゲート（閾値違反時は exit 1）
