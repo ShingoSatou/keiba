@@ -4,7 +4,7 @@ JRA-VANデータを用いた競馬予測モデル (LightGBM)
 
 ## 非開発者向け（運用者）クイックスタート
 
-当日（開催日）の **T-5 推論**までを最短で回す手順です。詳細は `docs/運用手順.md` を参照してください。
+当日（開催日）の **T-5 推論**までを最短で回す手順です。詳細は `docs/ops/運用手順.md` を参照してください。
 
 ```bash
 # 1) 依存導入
@@ -82,7 +82,7 @@ uv run python scripts/load_to_db.py --input-dir data/
 - **いまは取り込まない（未整備）**: `COMM/YSCH`（取得はできるが core化/特徴量利用が未整備）
 - **取り込まない**: `train*.parquet` / `data/ops/<date>/*`（学習/運用の成果物）
 
-表（取り込み先テーブル含む）は `docs/運用手順.md` にまとめています。
+表（取り込み先テーブル含む）は `docs/ops/運用手順.md` にまとめています。
 
 ### 3. 特徴量生成
 ```bash
@@ -95,7 +95,7 @@ uv run python scripts/build_features.py --rebuild --from-date 2016-01-01
 ```bash
 # DBからデータを取得し、学習用ファイル (data/train.parquet) を生成
 # デフォルト: 障害レース(surface=3)は除外（含める場合は --include-obstacles）
-uv run python scripts/build_dataset.py --from-date 2016-01-01 --min-horses 5 --output data/train.parquet
+uv run python scripts/build_dataset_t5.py --from-date 2016-01-01 --min-horses 5 --output data/train.parquet
 
 # 品質ゲート（閾値違反時は exit 1）
 uv run python scripts/check_dataset_quality.py --input data/train.parquet --gate --json-output data/quality/train_latest.json
@@ -103,61 +103,39 @@ uv run python scripts/check_dataset_quality.py --input data/train.parquet --gate
 
 ### 5. モデル学習
 ```bash
-# 通常モード (Train 70% / ES-Val 10% / Test 20%)
-uv run python scripts/train.py
+# 通常モード (Walk-Forward CV で評価)
+uv run python scripts/train_walk_forward.py
 
 # W&B を使わない場合（依存未導入でも実行可能）
-uv run python scripts/train.py --no-wandb
+uv run python scripts/train_walk_forward.py --no-wandb
 
-# 本番学習モード (Train 90% / ES-Val 10% / Testなし)
-# 未来の予測に使用するモデルを作成する場合
-uv run python scripts/train.py --production
+# 本番モデル (Bundle) セーブ用
+# 未来の予測に使用するデプロイモデルを作成する場合
+uv run python scripts/train_production_bundle.py
 ```
 
 ## 分析・評価ツール
 
-### バックテスト (標準)
-学習に使用していないTestデータ（時系列で最後の20%）を使用してモデル性能を評価します。
+### 本番運用バックテスト
+学習に使用していないデータを用いて、実際の運用で「過去買っていたらどう推移したか」をT-5スナップとCV予測値を用いてシミュレートします。
 
 ```bash
-# データリークを防ぐため --use-test-split 推奨
-uv run python scripts/backtest.py --use-test-split
+uv run python scripts/backtest_v2.py
 ```
 
-### 閾値最適化グリッドサーチ
-ROIを最大化する「最低勝率」と「最低EV」の閾値を探索します。
+### 閾値最適化
+バックテスト出力をもとに、EV閾値等のベターなパラメータを探します。
 
 ```bash
-# Testデータのみ使用して探索
-uv run python scripts/optimize_thresholds.py --use-test-split
+uv run python scripts/optimize_thresholds.py
 ```
-
-### ケリー基準シミュレーション
-資金管理戦略（ケリー基準）を用いた長期シミュレーションを行います。
-
-```bash
-# 初期資金5万円、スリッページ15% (デフォルト)
-uv run python scripts/backtest_kelly.py --use-test-split --initial-bankroll 50000
-```
-
-### [実験的] バリュー投資バックテスト (v2)
-市場オッズとの乖離（EV）を重視し、確率縮小（Shrinkage）や勝率レンジ指定を行う実験的なスクリプトです。
-
-```bash
-# 縮小なし(alpha=1.0)、勝率4%〜15%に限定してテスト
-uv run python scripts/backtest_v2.py --use-test-split --alpha 1.0 --min-prob 0.04 --max-prob 0.15
-```
-
-- `--alpha`: 縮小係数 (1.0=縮小なし, 0.0=市場オッズのみ)
-- `--min-prob` / `--max-prob`: 勝率レンジフィルタ
-- `--ev-threshold`: 期待値閾値 (例: 1.05)
 
 ## ドキュメント
 
-- [運用手順（非開発者向け）](docs/運用手順.md)
-- [運用仕様（T-5の採用ルール等）](docs/運用仕様書.md)
-- [データ取得仕様（JV-Link/JVRTOpen）](docs/データ取得仕様書.md)
-- [ダウンロードリスト（推奨dataspec）](docs/ダウンロードリスト.md)
-- [進捗状況（現状の制約/次にやること）](docs/進捗状況.md)
-- [DB/特徴量設計（参考）](docs/data_design.md)
-- [Reports](docs/reports/)
+- [スクリプトリファレンス](docs/ops/スクリプトリファレンス.md)
+- [運用手順（非開発者向け）](docs/ops/運用手順.md)
+- [運用仕様（T-5の採用ルール等）](docs/specs/50_運用仕様書.md)
+- [データ取得仕様（JV-Link/JVRTOpen）](docs/specs/10_データ取得仕様書.md)
+- [ダウンロードリスト（推奨dataspec）](docs/specs/11_ダウンロードリスト.md)
+- [進捗状況（現状の制約/次にやること）](docs/ops/進捗状況.md)
+- [DB設計仕様書（参考）](docs/specs/21_DB設計仕様書.md)
