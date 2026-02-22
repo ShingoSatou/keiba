@@ -20,10 +20,10 @@
 
 ### 非目的（本書では扱わない）
 
-* JV-Linkからの取得仕様（参照: `docs/データ取得仕様書.md`）
-* レコード→カラムのデータ辞書（参照: `docs/データ辞書・正規化仕様書.md`）
-* DB設計（参照: `docs/DB設計仕様書.md` / 一次ソース `migrations/0001_init_db.sql`）
-* 特徴量生成・学習・推論（参照: `docs/特徴量仕様.md`）
+* JV-Linkからの取得仕様（参照: `docs/specs/10_データ取得仕様書.md`）
+* レコード→カラムのデータ辞書（参照: `docs/specs/22_データ辞書.md`）
+* DB設計（参照: `docs/specs/21_DB設計仕様書.md` / 一次ソース `migrations/0001_init_db.sql`）
+* 特徴量生成・学習・推論（参照: `docs/specs/30_特徴量仕様書.md`）
 
 ---
 
@@ -154,7 +154,7 @@ uv run python scripts/load_to_db.py --input "data/DIFF_*.jsonl"
 
 ## 6. 正規化先（テーブル別の投入方針：要点）
 
-詳細なレコード→カラム対応は `docs/データ辞書・正規化仕様書.md` を正とする。
+詳細なレコード→カラム対応は `docs/specs/22_データ辞書.md` を正とする。
 
 ### 6.1 raw.jv_raw
 
@@ -187,7 +187,7 @@ uv run python scripts/load_to_db.py --input "data/DIFF_*.jsonl"
 
 ### 6.8 core.event_change（WE/AV/JC/TC/CC）
 
-* 現状は `payload_parsed`（監査キー＋最小構造化）を JSONB として保存し、`raw` も同梱する（詳細は `docs/データ辞書・正規化仕様書.md`）
+* 現状は `payload_parsed`（監査キー＋最小構造化）を JSONB として保存し、`raw` も同梱する（詳細は `docs/specs/22_データ辞書.md`）
 * T-5スナップ（`mart.t5_runner_snapshot`）への反映は後段バッチで実施する（現状: `TC/AV/JC` は `scripts/build_t5_snapshot.py` で反映、`WE/CC` はTODO）
 
 ### 6.9 core.mining_* / core.rt_mining_*（DM/TM）
@@ -276,7 +276,7 @@ uv run python scripts/verify_parsers.py
 
 ## 11. 参照
 
-* 取得仕様: `docs/データ取得仕様書.md`
-* データ辞書・正規化: `docs/データ辞書・正規化仕様書.md`
-* DB設計: `docs/DB設計仕様書.md`
+* 取得仕様: `docs/specs/10_データ取得仕様書.md`
+* データ辞書・正規化: `docs/specs/22_データ辞書.md`
+* DB設計: `docs/specs/21_DB設計仕様書.md`
 * ワークフロー（運用手順）: `.agent/workflows/batch-download.md`
