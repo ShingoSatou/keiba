@@ -47,8 +47,7 @@ def _get_result() -> dict:
             status_code=503,
             detail=(
                 "バックテスト結果ファイルが見つかりません。"
-                " 'uv run python scripts/backtest.py"
-                " --output data/backtest_result.json' を実行してください。"
+                " `data/backtest_result.json` を生成してから再度アクセスしてください。"
             ),
         ) from exc
 

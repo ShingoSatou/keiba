@@ -1,0 +1,6 @@
+BEGIN;
+
+ALTER TABLE core.event_change
+    ADD COLUMN IF NOT EXISTS data_kbn SMALLINT;
+
+COMMIT;
