@@ -206,6 +206,24 @@ RA_TRACK_TYPE_LEN = 2
 RA_COURSE_START = 709  # 仕様書: 710
 RA_COURSE_LEN = 2
 
+# 競走条件・グレード（仕様書 1-origin -> 0-origin）
+RA_GRADE_CODE_START = 614  # 仕様書: 615
+RA_GRADE_CODE_LEN = 1
+RA_RACE_TYPE_CODE_START = 616  # 実データ検証: 仕様位置617
+RA_RACE_TYPE_CODE_LEN = 2
+RA_WEIGHT_TYPE_CODE_START = 621  # 実データ検証: 仕様位置622
+RA_WEIGHT_TYPE_CODE_LEN = 1
+RA_COND_CODE_2YO_START = 622  # 実データ検証: 仕様位置623
+RA_COND_CODE_2YO_LEN = 3
+RA_COND_CODE_3YO_START = 625  # 実データ検証: 仕様位置626
+RA_COND_CODE_3YO_LEN = 3
+RA_COND_CODE_4YO_START = 628  # 実データ検証: 仕様位置629
+RA_COND_CODE_4YO_LEN = 3
+RA_COND_CODE_5UP_START = 631  # 実データ検証: 仕様位置632
+RA_COND_CODE_5UP_LEN = 3
+RA_COND_CODE_MIN_AGE_START = 634  # 実データ検証: 仕様位置635
+RA_COND_CODE_MIN_AGE_LEN = 3
+
 # 賞金 (本賞金 1着)
 RA_PRIZE1_START = 713  # 仕様書: 714
 RA_PRIZE1_LEN = 8
@@ -225,6 +243,51 @@ RA_DIRT_GOING_START = 889  # 仕様書: 890
 RA_DIRT_GOING_LEN = 1
 
 
+GRADE_CODE_MAP: dict[str, int] = {
+    "A": 1,  # G1
+    "B": 2,  # G2
+    "C": 3,  # G3
+    "D": 4,  # 非グレード重賞
+    "E": 5,  # 特別競走
+    "F": 6,  # JG1
+    "G": 7,  # JG2
+    "H": 8,  # JG3
+    "L": 9,  # Listed
+}
+
+
+def _grade_code_to_int(code: str) -> int | None:
+    code_norm = (code or "").strip().upper()
+    if not code_norm or code_norm == "_":
+        return None
+    return GRADE_CODE_MAP.get(code_norm)
+
+
+def _choose_condition_code(
+    race_type_code: int | None,
+    cond_2yo: int | None,
+    cond_3yo: int | None,
+    cond_4yo: int | None,
+    cond_5up: int | None,
+    cond_min_age: int | None,
+) -> int:
+    if race_type_code == 11 and cond_2yo and cond_2yo > 0:
+        return cond_2yo
+    if race_type_code in (12, 13) and cond_3yo and cond_3yo > 0:
+        return cond_3yo
+    if race_type_code == 14:
+        if cond_4yo and cond_4yo > 0:
+            return cond_4yo
+        if cond_5up and cond_5up > 0:
+            return cond_5up
+    if cond_min_age and cond_min_age > 0:
+        return cond_min_age
+    for value in (cond_5up, cond_4yo, cond_3yo, cond_2yo):
+        if value and value > 0:
+            return value
+    return 0
+
+
 @dataclass
 class RaceRecord:
     """RAレコード: レース詳細情報"""
@@ -242,6 +305,10 @@ class RaceRecord:
     start_time: time | None  # 発走時刻
     turn_dir: int | None  # 回り (1:右, 2:左, 3:直線)
     course_inout: int | None  # コース区分
+    grade_code: int | None  # グレード
+    race_type_code: int | None  # 競走種別
+    weight_type_code: int | None  # 重量種別
+    condition_code_min_age: int | None  # 最若年条件コード
 
     @classmethod
     def parse(cls, payload: str) -> RaceRecord:
@@ -293,8 +360,31 @@ class RaceRecord:
         if weather <= 0:
             weather = None
 
-        # クラスコード・回りは一旦未取得（必要なら定義追加）
-        class_code = 0
+        grade_code = _grade_code_to_int(
+            _slice_byte_decode(b_payload, RA_GRADE_CODE_START, RA_GRADE_CODE_LEN)
+        )
+        race_type_raw = _slice_byte_int(b_payload, RA_RACE_TYPE_CODE_START, RA_RACE_TYPE_CODE_LEN)
+        race_type_code = race_type_raw if race_type_raw > 0 else None
+        weight_type_raw = _slice_byte_int(
+            b_payload, RA_WEIGHT_TYPE_CODE_START, RA_WEIGHT_TYPE_CODE_LEN
+        )
+        weight_type_code = weight_type_raw if weight_type_raw > 0 else None
+        cond_2yo = _slice_byte_int(b_payload, RA_COND_CODE_2YO_START, RA_COND_CODE_2YO_LEN)
+        cond_3yo = _slice_byte_int(b_payload, RA_COND_CODE_3YO_START, RA_COND_CODE_3YO_LEN)
+        cond_4yo = _slice_byte_int(b_payload, RA_COND_CODE_4YO_START, RA_COND_CODE_4YO_LEN)
+        cond_5up = _slice_byte_int(b_payload, RA_COND_CODE_5UP_START, RA_COND_CODE_5UP_LEN)
+        condition_min_raw = _slice_byte_int(
+            b_payload, RA_COND_CODE_MIN_AGE_START, RA_COND_CODE_MIN_AGE_LEN
+        )
+        condition_code_min_age = condition_min_raw if condition_min_raw > 0 else None
+        class_code = _choose_condition_code(
+            race_type_code,
+            cond_2yo if cond_2yo > 0 else None,
+            cond_3yo if cond_3yo > 0 else None,
+            cond_4yo if cond_4yo > 0 else None,
+            cond_5up if cond_5up > 0 else None,
+            condition_code_min_age,
+        )
         turn_dir = None
 
         # コース区分 (数値変換できればする)
@@ -332,6 +422,10 @@ class RaceRecord:
             start_time=start_time,
             turn_dir=turn_dir,
             course_inout=course_inout,
+            grade_code=grade_code,
+            race_type_code=race_type_code,
+            weight_type_code=weight_type_code,
+            condition_code_min_age=condition_code_min_age,
         )
 
 
@@ -461,6 +555,7 @@ class RunnerRecord:
     trainer_name_abbr: str
     jockey_code_raw: str
     jockey_name_abbr: str
+    sex: int | None = None
 
     @classmethod
     def parse(cls, payload: str, race_id: int = 0) -> RunnerRecord:
@@ -521,6 +616,8 @@ class RunnerRecord:
 
         body_weight_raw = _slice_byte_int(b_payload, SE_BODY_WEIGHT_START, SE_BODY_WEIGHT_LEN)
         body_weight = body_weight_raw if body_weight_raw > 0 else None
+        sex_raw = _slice_byte_int(b_payload, SE_SEX_CODE_START, SE_SEX_CODE_LEN)
+        sex = sex_raw if sex_raw in (1, 2, 3) else None
 
         weight_diff_str = _slice_byte_decode(b_payload, SE_WEIGHT_DIFF_START, SE_WEIGHT_DIFF_LEN)
         try:
@@ -574,6 +671,7 @@ class RunnerRecord:
             trainer_name_abbr=trainer_name_abbr,
             jockey_code_raw=jockey_code_raw,
             jockey_name_abbr=jockey_name_abbr,
+            sex=sex,
         )
 
 
@@ -833,6 +931,154 @@ O1_PLACE_COUNT = 28
 O1_BRACKET_START = 603
 O1_BRACKET_BLOCK_LEN = 9
 O1_BRACKET_COUNT = 36
+
+
+O3_RACE_KEY_START = 11
+O3_RACE_KEY_LEN = 16
+O3_DATA_KBN_START = 2
+O3_DATA_KBN_LEN = 1
+O3_DATA_CREATE_YMD_START = 3
+O3_DATA_CREATE_YMD_LEN = 8
+O3_ANNOUNCE_MMDDHHMI_START = 27
+O3_ANNOUNCE_MMDDHHMI_LEN = 8
+O3_STARTERS_START = 37
+O3_STARTERS_LEN = 2
+O3_SALE_FLAG_WIDE_START = 39
+O3_SALE_FLAG_WIDE_LEN = 1
+O3_WIDE_START = 40
+O3_WIDE_BLOCK_LEN = 17
+O3_WIDE_COUNT = 153
+O3_WIDE_POOL_START = 2641
+O3_WIDE_POOL_LEN = 11
+
+
+@dataclass
+class O3HeaderRecord:
+    """O3レコードヘッダー（ワイド）"""
+
+    race_id: int
+    data_kbn: int
+    announce_mmddhhmi: str
+    data_create_ymd: str
+    wide_pool_total_100yen: int | None
+    starters: int | None
+    sale_flag_wide: int | None
+
+    @classmethod
+    def parse(cls, payload: str, race_id: int = 0) -> O3HeaderRecord:
+        try:
+            b_payload = payload.encode("cp932")
+        except UnicodeEncodeError:
+            b_payload = payload.encode("cp932", errors="replace")
+
+        if len(b_payload) < 2654:
+            b_payload = b_payload.ljust(2654, b" ")
+
+        data_kbn = _slice_byte_int(b_payload, O3_DATA_KBN_START, O3_DATA_KBN_LEN)
+        data_create_ymd = _slice_byte_decode(
+            b_payload, O3_DATA_CREATE_YMD_START, O3_DATA_CREATE_YMD_LEN
+        )
+        if not data_create_ymd:
+            data_create_ymd = "00000000"
+
+        announce_mmddhhmi = _slice_byte_decode(
+            b_payload, O3_ANNOUNCE_MMDDHHMI_START, O3_ANNOUNCE_MMDDHHMI_LEN
+        )
+        if not announce_mmddhhmi:
+            announce_mmddhhmi = "00000000"
+
+        starters_raw = _slice_byte_int(b_payload, O3_STARTERS_START, O3_STARTERS_LEN)
+        starters = starters_raw if starters_raw > 0 else None
+
+        sale_flag_raw = _slice_byte_int(b_payload, O3_SALE_FLAG_WIDE_START, O3_SALE_FLAG_WIDE_LEN)
+        sale_flag_wide = sale_flag_raw if sale_flag_raw >= 0 else None
+
+        wide_pool_total_raw = _slice_byte_int(b_payload, O3_WIDE_POOL_START, O3_WIDE_POOL_LEN)
+        wide_pool_total_100yen = wide_pool_total_raw if wide_pool_total_raw > 0 else None
+
+        if race_id == 0:
+            race_key = _slice_byte_decode(b_payload, O3_RACE_KEY_START, O3_RACE_KEY_LEN)
+            if len(race_key) >= 16:
+                try:
+                    year = int(race_key[0:4])
+                    month = int(race_key[4:6])
+                    day = int(race_key[6:8])
+                    track = int(race_key[8:10])
+                    race_no = int(race_key[14:16])
+                    date_int = year * 10000 + month * 100 + day
+                    race_id = date_int * 10000 + track * 100 + race_no
+                except ValueError:
+                    pass
+
+        return cls(
+            race_id=race_id,
+            data_kbn=data_kbn,
+            announce_mmddhhmi=announce_mmddhhmi,
+            data_create_ymd=data_create_ymd,
+            wide_pool_total_100yen=wide_pool_total_100yen,
+            starters=starters,
+            sale_flag_wide=sale_flag_wide,
+        )
+
+
+@dataclass
+class O3WideRecord:
+    """O3レコード詳細（ワイド組番別）"""
+
+    race_id: int
+    data_kbn: int
+    announce_mmddhhmi: str
+    data_create_ymd: str
+    kumiban: str
+    min_odds_x10: int | None
+    max_odds_x10: int | None
+    popularity: int | None
+    wide_pool_total_100yen: int | None
+    starters: int | None
+    sale_flag_wide: int | None
+
+    @classmethod
+    def parse(cls, payload: str, race_id: int = 0) -> list[O3WideRecord]:
+        try:
+            b_payload = payload.encode("cp932")
+        except UnicodeEncodeError:
+            b_payload = payload.encode("cp932", errors="replace")
+
+        if len(b_payload) < 2654:
+            b_payload = b_payload.ljust(2654, b" ")
+
+        header = O3HeaderRecord.parse(payload, race_id=race_id)
+        rows: list[O3WideRecord] = []
+
+        for i in range(O3_WIDE_COUNT):
+            offset = O3_WIDE_START + i * O3_WIDE_BLOCK_LEN
+            kumiban_raw = _slice_byte_decode(b_payload, offset, 4)
+            kumiban = kumiban_raw.replace(" ", "0")
+            if len(kumiban) != 4 or not kumiban.isdigit() or kumiban == "0000":
+                continue
+
+            min_odds_x10 = _slice_byte_maskable_int(b_payload, offset + 4, 5)
+            max_odds_x10 = _slice_byte_maskable_int(b_payload, offset + 9, 5)
+            popularity_raw = _slice_byte_maskable_int(b_payload, offset + 14, 3)
+            popularity = popularity_raw if popularity_raw and popularity_raw > 0 else None
+
+            rows.append(
+                cls(
+                    race_id=header.race_id,
+                    data_kbn=header.data_kbn,
+                    announce_mmddhhmi=header.announce_mmddhhmi,
+                    data_create_ymd=header.data_create_ymd,
+                    kumiban=kumiban,
+                    min_odds_x10=min_odds_x10,
+                    max_odds_x10=max_odds_x10,
+                    popularity=popularity,
+                    wide_pool_total_100yen=header.wide_pool_total_100yen,
+                    starters=header.starters,
+                    sale_flag_wide=header.sale_flag_wide,
+                )
+            )
+
+        return rows
 
 
 @dataclass
@@ -1147,8 +1393,9 @@ WH_RACE_KEY_LEN = 16
 WH_ANNOUNCE_MMDDHHMI_START = 27
 WH_ANNOUNCE_MMDDHHMI_LEN = 8
 WH_DETAIL_START = 35
-WH_DETAIL_BLOCK_LEN = 8  # 馬番(2) + 体重(3) + 増減符号(1) + 増減(2)
-WH_DETAIL_COUNT = 28
+# 仕様書(101.馬体重/WH): 馬番(2) + 馬名(36) + 馬体重(3) + 増減符号(1) + 増減差(3) = 45 byte
+WH_DETAIL_BLOCK_LEN = 45
+WH_DETAIL_COUNT = 18
 
 
 @dataclass
@@ -1171,8 +1418,9 @@ class WHRecord:
         except UnicodeEncodeError:
             b_payload = payload.encode("cp932", errors="replace")
 
-        if len(b_payload) < 300:
-            b_payload = b_payload.ljust(300, b" ")
+        required_len = WH_DETAIL_START + WH_DETAIL_BLOCK_LEN * WH_DETAIL_COUNT + 2
+        if len(b_payload) < required_len:
+            b_payload = b_payload.ljust(required_len, b" ")
 
         results = []
 
@@ -1200,9 +1448,12 @@ class WHRecord:
         for i in range(WH_DETAIL_COUNT):
             offset = WH_DETAIL_START + i * WH_DETAIL_BLOCK_LEN
             h_no = _slice_byte_int(b_payload, offset, 2)
-            weight = _slice_byte_int(b_payload, offset + 2, 3)
-            sign = _slice_byte_decode(b_payload, offset + 5, 1)
-            diff = _slice_byte_int(b_payload, offset + 6, 2)
+            weight = _slice_byte_int(b_payload, offset + 38, 3)
+            sign = _slice_byte_decode(b_payload, offset + 41, 1)
+            diff = _slice_byte_int(b_payload, offset + 42, 3)
+
+            if sign not in {"+", "-"}:
+                sign = " "
 
             if h_no and h_no > 0:
                 results.append(
@@ -1211,9 +1462,9 @@ class WHRecord:
                         data_kbn=data_kbn,
                         announce_mmddhhmi=announce_mmddhhmi,
                         horse_no=h_no,
-                        body_weight_kg=weight if weight > 0 else None,
-                        diff_sign=sign if sign else " ",
-                        diff_kg=diff if diff > 0 else None,
+                        body_weight_kg=weight if 2 <= weight <= 998 else None,
+                        diff_sign=sign,
+                        diff_kg=diff if 1 <= diff <= 998 else None,
                     )
                 )
 
@@ -2183,6 +2434,7 @@ PARSERS: dict[str, Callable] = {
     "SE": RunnerRecord.parse,
     "HR": PayoutRecord.parse,
     "O1": OddsRecord.parse,
+    "O3": O3WideRecord.parse,
     "JG": HorseExclusionRecord.parse,
     "UM": HorseMasterRecord.parse,
     # 新規追加
@@ -2202,6 +2454,7 @@ PARSERS: dict[str, Callable] = {
 # 時系列オッズ用（別途使用）
 PARSERS_TIMESERIES: dict[str, Callable] = {
     "O1": OddsTimeSeriesRecord.parse,
+    "O3": O3WideRecord.parse,
 }
 
 
