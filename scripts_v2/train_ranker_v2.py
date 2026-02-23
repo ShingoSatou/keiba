@@ -9,6 +9,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import lightgbm as lgb
 import numpy as np
@@ -60,6 +61,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--num-leaves", type=int, default=63)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--log-level", default="INFO")
+    parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging.")
+    parser.add_argument("--wandb-project", default="keiba-v2")
+    parser.add_argument("--wandb-entity")
+    parser.add_argument("--wandb-run-name")
+    parser.add_argument("--wandb-tags", default="")
+    parser.add_argument(
+        "--wandb-mode",
+        default="online",
+        choices=["online", "offline", "disabled"],
+        help="W&B mode when --wandb is enabled.",
+    )
     return parser.parse_args(argv)
 
 
@@ -304,6 +316,29 @@ def _save_json(path: Path, obj: dict) -> None:
     path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _parse_wandb_tags(raw: str) -> list[str]:
+    return [tag.strip() for tag in raw.split(",") if tag.strip()]
+
+
+def _init_wandb_run(args: argparse.Namespace, *, config: dict[str, Any]):
+    if not args.wandb or args.wandb_mode == "disabled":
+        return None
+    try:
+        import wandb
+    except ModuleNotFoundError as exc:  # pragma: no cover
+        raise SystemExit("wandb is not installed. Run `uv sync --extra wandb`.") from exc
+
+    run = wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity or None,
+        name=args.wandb_run_name or None,
+        tags=_parse_wandb_tags(args.wandb_tags),
+        mode=args.wandb_mode,
+        config=config,
+    )
+    return run
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO))
@@ -350,6 +385,26 @@ def main(argv: list[str] | None = None) -> int:
         args.holdout_year,
     )
 
+    wandb_run = _init_wandb_run(
+        args,
+        config={
+            "holdout_year": int(args.holdout_year),
+            "train_window_years": int(args.train_window_years),
+            "num_boost_round": int(args.num_boost_round),
+            "early_stopping_rounds": int(args.early_stopping_rounds),
+            "learning_rate": float(args.learning_rate),
+            "num_leaves": int(args.num_leaves),
+            "seed": int(args.seed),
+            "objective": "lambdarank",
+            "eval_at": [3],
+            "rows": int(len(frame)),
+            "races": int(frame["race_id"].nunique()),
+            "years": years,
+        },
+    )
+    if wandb_run is not None:
+        wandb_run.summary["planned_folds"] = int(len(folds))
+
     oof_list: list[pd.DataFrame] = []
     fold_metrics_list: list[dict] = []
     best_iterations: list[int] = []
@@ -385,6 +440,20 @@ def main(argv: list[str] | None = None) -> int:
             fold_metrics["ndcg_at_3"],
             fold_metrics["best_iteration"],
         )
+        if wandb_run is not None:
+            wandb_run.log(
+                {
+                    "cv/fold_id": int(fold.fold_id),
+                    "cv/valid_year": int(fold_metrics["valid_year"]),
+                    "cv/ndcg_at_3": float(fold_metrics["ndcg_at_3"]),
+                    "cv/best_iteration": int(fold_metrics["best_iteration"]),
+                    "cv/train_rows": int(fold_metrics["train_rows"]),
+                    "cv/valid_rows": int(fold_metrics["valid_rows"]),
+                    "cv/train_races": int(fold_metrics["train_races"]),
+                    "cv/valid_races": int(fold_metrics["valid_races"]),
+                },
+                step=int(fold.fold_id),
+            )
 
     if not oof_list:
         raise SystemExit("No OOF predictions generated.")
@@ -506,6 +575,27 @@ def main(argv: list[str] | None = None) -> int:
         "code_hash": _hash_files([Path(__file__)]),
     }
     _save_json(meta_output, meta)
+
+    if wandb_run is not None:
+        wandb_run.log(
+            {
+                "cv/ndcg_at_3_mean": float(metrics["summary"]["ndcg_at_3_mean"]),
+                "cv/ndcg_at_3_std": float(metrics["summary"]["ndcg_at_3_std"]),
+                "cv/ndcg_at_3_min": float(metrics["summary"]["ndcg_at_3_min"]),
+                "cv/ndcg_at_3_max": float(metrics["summary"]["ndcg_at_3_max"]),
+                "cv/best_iteration_median": int(metrics["summary"]["best_iteration_median"]),
+                "oof/rows": int(metrics["data_summary"]["oof_rows"]),
+                "oof/races": int(metrics["data_summary"]["oof_races"]),
+                "model/main_rows": int(meta["final_train_summary"]["main_model_rows"]),
+                "model/all_years_rows": int(meta["final_train_summary"]["all_years_model_rows"]),
+            }
+        )
+        wandb_run.summary["oof_path"] = str(oof_output)
+        wandb_run.summary["cv_metrics_path"] = str(metrics_output)
+        wandb_run.summary["main_model_path"] = str(model_output)
+        wandb_run.summary["all_years_model_path"] = str(all_years_model_output)
+        wandb_run.summary["bundle_meta_path"] = str(meta_output)
+        wandb_run.finish()
 
     logger.info("wrote %s", oof_output)
     logger.info("wrote %s", metrics_output)
