@@ -9,17 +9,21 @@ from app.infrastructure.parsers import (
     O3_STARTERS_START,
     O3_WIDE_POOL_START,
     O3_WIDE_START,
+    RA_COND_CODE_MIN_AGE_START,
     RA_COURSE_START,
     RA_DISTANCE_START,
     RA_FIELD_SIZE_START,
+    RA_GRADE_CODE_START,
     RA_MONTHDAY_START,
     RA_RACE_NO_START,
+    RA_RACE_TYPE_CODE_START,
     RA_START_TIME_START,
     RA_STARTERS_START,
     RA_TRACK_CODE_START,
     RA_TRACK_TYPE_START,
     RA_TURF_GOING_START,
     RA_WEATHER_START,
+    RA_WEIGHT_TYPE_CODE_START,
     RA_YEAR_START,
     DMRecord,
     EventChangeRecord,
@@ -64,6 +68,36 @@ class TestSliceFunctions:
 
 
 class TestRaceRecordParser:
+    def test_parse_race_condition_offsets_from_real_data_layout(self):
+        b_payload = bytearray(b" " * 1200)
+
+        def put(offset: int, text: str):
+            b = text.encode("cp932")
+            b_payload[offset : offset + len(b)] = b
+
+        put(0, "RA1")
+        put(RA_YEAR_START, "2026")
+        put(RA_MONTHDAY_START, "0203")
+        put(RA_TRACK_CODE_START, "05")
+        put(RA_RACE_NO_START, "12")
+        put(614, "A")
+        put(616, "14")
+        put(621, "3")
+        put(622, "701")
+        put(625, "010")
+        put(628, "005")
+        put(631, "016")
+        put(634, "999")
+
+        payload = bytes(b_payload).decode("cp932", errors="replace")
+        record = RaceRecord.parse(payload)
+
+        assert record.grade_code == 1
+        assert record.race_type_code == 14
+        assert record.weight_type_code == 3
+        assert record.condition_code_min_age == 999
+        assert record.class_code == 5
+
     def test_parse_with_multibyte_fields_keeps_byte_offsets(self):
         b_payload = bytearray(b" " * 1200)
 
@@ -79,6 +113,10 @@ class TestRaceRecordParser:
         put(RA_DISTANCE_START, "1600")
         put(RA_TRACK_TYPE_START, "10")
         put(RA_COURSE_START, "01")
+        put(RA_GRADE_CODE_START, "A")
+        put(RA_RACE_TYPE_CODE_START, "14")
+        put(RA_WEIGHT_TYPE_CODE_START, "2")
+        put(RA_COND_CODE_MIN_AGE_START, "999")
         put(RA_START_TIME_START, "1540")
         put(RA_FIELD_SIZE_START, "18")
         put(RA_WEATHER_START, "1")
@@ -96,6 +134,11 @@ class TestRaceRecordParser:
         assert record.start_time is not None
         assert record.start_time.hour == 15
         assert record.start_time.minute == 40
+        assert record.grade_code == 1
+        assert record.race_type_code == 14
+        assert record.weight_type_code == 2
+        assert record.condition_code_min_age == 999
+        assert record.class_code == 999
 
     def test_parse_normalizes_distance_and_uses_starters(self):
         b_payload = bytearray(b" " * 1200)
@@ -138,6 +181,7 @@ class TestRunnerRecordParser:
         put(28, "10")
         put(30, "2021101234")
         put(40, "テストホース")
+        put(78, "1")
         put(85, "54321")
         put(90, "調教師名")
         put(288, "500")
@@ -160,6 +204,7 @@ class TestRunnerRecordParser:
         assert record.finish_pos == 1
         assert record.time_sec == 90.0
         assert record.data_kubun == "1"
+        assert record.sex == 1
 
 
 class TestPayoutRecordParser:

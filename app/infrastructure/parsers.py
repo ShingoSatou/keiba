@@ -206,6 +206,24 @@ RA_TRACK_TYPE_LEN = 2
 RA_COURSE_START = 709  # 仕様書: 710
 RA_COURSE_LEN = 2
 
+# 競走条件・グレード（仕様書 1-origin -> 0-origin）
+RA_GRADE_CODE_START = 614  # 仕様書: 615
+RA_GRADE_CODE_LEN = 1
+RA_RACE_TYPE_CODE_START = 616  # 実データ検証: 仕様位置617
+RA_RACE_TYPE_CODE_LEN = 2
+RA_WEIGHT_TYPE_CODE_START = 621  # 実データ検証: 仕様位置622
+RA_WEIGHT_TYPE_CODE_LEN = 1
+RA_COND_CODE_2YO_START = 622  # 実データ検証: 仕様位置623
+RA_COND_CODE_2YO_LEN = 3
+RA_COND_CODE_3YO_START = 625  # 実データ検証: 仕様位置626
+RA_COND_CODE_3YO_LEN = 3
+RA_COND_CODE_4YO_START = 628  # 実データ検証: 仕様位置629
+RA_COND_CODE_4YO_LEN = 3
+RA_COND_CODE_5UP_START = 631  # 実データ検証: 仕様位置632
+RA_COND_CODE_5UP_LEN = 3
+RA_COND_CODE_MIN_AGE_START = 634  # 実データ検証: 仕様位置635
+RA_COND_CODE_MIN_AGE_LEN = 3
+
 # 賞金 (本賞金 1着)
 RA_PRIZE1_START = 713  # 仕様書: 714
 RA_PRIZE1_LEN = 8
@@ -225,6 +243,51 @@ RA_DIRT_GOING_START = 889  # 仕様書: 890
 RA_DIRT_GOING_LEN = 1
 
 
+GRADE_CODE_MAP: dict[str, int] = {
+    "A": 1,  # G1
+    "B": 2,  # G2
+    "C": 3,  # G3
+    "D": 4,  # 非グレード重賞
+    "E": 5,  # 特別競走
+    "F": 6,  # JG1
+    "G": 7,  # JG2
+    "H": 8,  # JG3
+    "L": 9,  # Listed
+}
+
+
+def _grade_code_to_int(code: str) -> int | None:
+    code_norm = (code or "").strip().upper()
+    if not code_norm or code_norm == "_":
+        return None
+    return GRADE_CODE_MAP.get(code_norm)
+
+
+def _choose_condition_code(
+    race_type_code: int | None,
+    cond_2yo: int | None,
+    cond_3yo: int | None,
+    cond_4yo: int | None,
+    cond_5up: int | None,
+    cond_min_age: int | None,
+) -> int:
+    if race_type_code == 11 and cond_2yo and cond_2yo > 0:
+        return cond_2yo
+    if race_type_code in (12, 13) and cond_3yo and cond_3yo > 0:
+        return cond_3yo
+    if race_type_code == 14:
+        if cond_4yo and cond_4yo > 0:
+            return cond_4yo
+        if cond_5up and cond_5up > 0:
+            return cond_5up
+    if cond_min_age and cond_min_age > 0:
+        return cond_min_age
+    for value in (cond_5up, cond_4yo, cond_3yo, cond_2yo):
+        if value and value > 0:
+            return value
+    return 0
+
+
 @dataclass
 class RaceRecord:
     """RAレコード: レース詳細情報"""
@@ -242,6 +305,10 @@ class RaceRecord:
     start_time: time | None  # 発走時刻
     turn_dir: int | None  # 回り (1:右, 2:左, 3:直線)
     course_inout: int | None  # コース区分
+    grade_code: int | None  # グレード
+    race_type_code: int | None  # 競走種別
+    weight_type_code: int | None  # 重量種別
+    condition_code_min_age: int | None  # 最若年条件コード
 
     @classmethod
     def parse(cls, payload: str) -> RaceRecord:
@@ -293,8 +360,31 @@ class RaceRecord:
         if weather <= 0:
             weather = None
 
-        # クラスコード・回りは一旦未取得（必要なら定義追加）
-        class_code = 0
+        grade_code = _grade_code_to_int(
+            _slice_byte_decode(b_payload, RA_GRADE_CODE_START, RA_GRADE_CODE_LEN)
+        )
+        race_type_raw = _slice_byte_int(b_payload, RA_RACE_TYPE_CODE_START, RA_RACE_TYPE_CODE_LEN)
+        race_type_code = race_type_raw if race_type_raw > 0 else None
+        weight_type_raw = _slice_byte_int(
+            b_payload, RA_WEIGHT_TYPE_CODE_START, RA_WEIGHT_TYPE_CODE_LEN
+        )
+        weight_type_code = weight_type_raw if weight_type_raw > 0 else None
+        cond_2yo = _slice_byte_int(b_payload, RA_COND_CODE_2YO_START, RA_COND_CODE_2YO_LEN)
+        cond_3yo = _slice_byte_int(b_payload, RA_COND_CODE_3YO_START, RA_COND_CODE_3YO_LEN)
+        cond_4yo = _slice_byte_int(b_payload, RA_COND_CODE_4YO_START, RA_COND_CODE_4YO_LEN)
+        cond_5up = _slice_byte_int(b_payload, RA_COND_CODE_5UP_START, RA_COND_CODE_5UP_LEN)
+        condition_min_raw = _slice_byte_int(
+            b_payload, RA_COND_CODE_MIN_AGE_START, RA_COND_CODE_MIN_AGE_LEN
+        )
+        condition_code_min_age = condition_min_raw if condition_min_raw > 0 else None
+        class_code = _choose_condition_code(
+            race_type_code,
+            cond_2yo if cond_2yo > 0 else None,
+            cond_3yo if cond_3yo > 0 else None,
+            cond_4yo if cond_4yo > 0 else None,
+            cond_5up if cond_5up > 0 else None,
+            condition_code_min_age,
+        )
         turn_dir = None
 
         # コース区分 (数値変換できればする)
@@ -332,6 +422,10 @@ class RaceRecord:
             start_time=start_time,
             turn_dir=turn_dir,
             course_inout=course_inout,
+            grade_code=grade_code,
+            race_type_code=race_type_code,
+            weight_type_code=weight_type_code,
+            condition_code_min_age=condition_code_min_age,
         )
 
 
@@ -461,6 +555,7 @@ class RunnerRecord:
     trainer_name_abbr: str
     jockey_code_raw: str
     jockey_name_abbr: str
+    sex: int | None = None
 
     @classmethod
     def parse(cls, payload: str, race_id: int = 0) -> RunnerRecord:
@@ -521,6 +616,8 @@ class RunnerRecord:
 
         body_weight_raw = _slice_byte_int(b_payload, SE_BODY_WEIGHT_START, SE_BODY_WEIGHT_LEN)
         body_weight = body_weight_raw if body_weight_raw > 0 else None
+        sex_raw = _slice_byte_int(b_payload, SE_SEX_CODE_START, SE_SEX_CODE_LEN)
+        sex = sex_raw if sex_raw in (1, 2, 3) else None
 
         weight_diff_str = _slice_byte_decode(b_payload, SE_WEIGHT_DIFF_START, SE_WEIGHT_DIFF_LEN)
         try:
@@ -574,6 +671,7 @@ class RunnerRecord:
             trainer_name_abbr=trainer_name_abbr,
             jockey_code_raw=jockey_code_raw,
             jockey_name_abbr=jockey_name_abbr,
+            sex=sex,
         )
 
 

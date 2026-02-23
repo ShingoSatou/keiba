@@ -36,6 +36,8 @@
 - [x] [P0] `keiba_v2` をクリーン再構築（schema reset + migrations `0001`〜`0005` 適用 ※`migrations_v2/`）
 - [x] [P0] 実データロード（`RACE/DIFF/MING/0B41(merged)/0B11/0B14/0B13/0B17`）
 - [x] [P0] 品質チェック（非中央=0 / stub race=709 / WH異常=0 / horse_no=99が12件）
+- [x] [P0] RA条件コード系オフセットを実データで補正（`race_type_code/weight_type_code/condition_code_min_age`）
+- [x] [P0] RA/SEのbackfillを再実行し、`core.race`/`core.runner.sex` を更新
 - [ ] [P2] （メモ）stub race（`distance_m<=0` かつ/または `surface<=0`）が 709 件（2016以降: 354 / 2016以前: 355）。Phase 2 で除外/補完方針が必要
 - [ ] [P2] （メモ）`core.o1_win.win_odds_x10` は「単勝オッズ×10（整数）」で、欠損が多い（`NULL`=106,071 / `0`=951,416）。下流では `NULL/0` を欠損扱いに統一する想定
 - [ ] [P2] （メモ）`core.o3_wide.min_odds_x10` は「ワイド確定オッズ（下限）×10」で、`NULL`=29,215。JV側の `*****` マスク（発売なし/発売停止/取消等）に注意
@@ -43,11 +45,14 @@
 
 ## Phase 2: 特徴量生成
 
-- [ ] [P1] `scripts_v2/build_features_v2.py` を作成
-- [ ] [P1] 1行=1頭の学習行列を生成
-- [ ] [P1] レース内相対特徴量（z/rank）を実装
-- [ ] [P1] as-ofリーク検査を実装
-- [ ] [P1] `data/features_v2.parquet` 出力仕様を固定
+- [x] [P1] `scripts_v2/build_features_v2.py` を作成
+- [x] [P1] 1行=1頭の学習行列を生成
+- [x] [P1] レース内相対特徴量（z/rank）を実装
+- [x] [P1] as-ofリーク検査を実装
+- [x] [P1] `data/features_v2.parquet` 出力仕様を固定
+- [x] [P1] 実データで `build_features_v2.py` を完走（`--from-date 2016-01-01 --to-date 2024-12-31`）
+- [x] [P1] 生成品質チェック（`rows=45,444 / races=3,188 / セグメント逸脱=0 / sort=OK / 重複=0`）
+- [ ] [P2] （メモ）現データでの対象期間終端は `2024-05-26`（`to-date=2024-12-31` を指定しても以降はデータなし）
 
 ## Phase 3: Ranker学習
 

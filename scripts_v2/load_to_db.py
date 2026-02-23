@@ -136,11 +136,15 @@ def upsert_race(db: Database, race: RaceRecord) -> None:
         """
         INSERT INTO core.race (
             race_id, race_date, track_code, race_no, surface,
-            distance_m, going, weather, class_code, field_size, start_time
+            distance_m, going, weather, class_code, field_size, start_time,
+            turn_dir, course_inout, grade_code, race_type_code,
+            weight_type_code, condition_code_min_age
         ) VALUES (
             %(race_id)s, %(race_date)s, %(track_code)s, %(race_no)s, %(surface)s,
             %(distance_m)s, %(going)s, %(weather)s,
-            %(class_code)s, %(field_size)s, %(start_time)s
+            %(class_code)s, %(field_size)s, %(start_time)s,
+            %(turn_dir)s, %(course_inout)s, %(grade_code)s, %(race_type_code)s,
+            %(weight_type_code)s, %(condition_code_min_age)s
         )
         ON CONFLICT (race_id) DO UPDATE SET
             surface = CASE
@@ -167,9 +171,36 @@ def upsert_race(db: Database, race: RaceRecord) -> None:
             END,
             going = COALESCE(EXCLUDED.going, NULLIF(core.race.going, 0)),
             weather = COALESCE(EXCLUDED.weather, NULLIF(core.race.weather, 0)),
-            class_code = COALESCE(core.race.class_code, EXCLUDED.class_code, 0),
+            class_code = COALESCE(
+                NULLIF(EXCLUDED.class_code, 0),
+                NULLIF(core.race.class_code, 0),
+                core.race.class_code,
+                0
+            ),
             field_size = COALESCE(EXCLUDED.field_size, NULLIF(core.race.field_size, 0)),
             start_time = COALESCE(EXCLUDED.start_time, core.race.start_time),
+            turn_dir = COALESCE(core.race.turn_dir, EXCLUDED.turn_dir),
+            course_inout = COALESCE(
+                NULLIF(core.race.course_inout, 0),
+                NULLIF(EXCLUDED.course_inout, 0),
+                core.race.course_inout
+            ),
+            grade_code = COALESCE(core.race.grade_code, EXCLUDED.grade_code),
+            race_type_code = COALESCE(
+                NULLIF(EXCLUDED.race_type_code, 0),
+                NULLIF(core.race.race_type_code, 0),
+                core.race.race_type_code
+            ),
+            weight_type_code = COALESCE(
+                NULLIF(EXCLUDED.weight_type_code, 0),
+                NULLIF(core.race.weight_type_code, 0),
+                core.race.weight_type_code
+            ),
+            condition_code_min_age = COALESCE(
+                NULLIF(EXCLUDED.condition_code_min_age, 0),
+                NULLIF(core.race.condition_code_min_age, 0),
+                core.race.condition_code_min_age
+            ),
             updated_at = now()
         """,
         {
@@ -184,6 +215,12 @@ def upsert_race(db: Database, race: RaceRecord) -> None:
             "class_code": race.class_code,
             "field_size": race.field_size,
             "start_time": race.start_time,
+            "turn_dir": race.turn_dir,
+            "course_inout": race.course_inout,
+            "grade_code": race.grade_code,
+            "race_type_code": race.race_type_code,
+            "weight_type_code": race.weight_type_code,
+            "condition_code_min_age": race.condition_code_min_age,
         },
     )
 
@@ -228,7 +265,7 @@ def upsert_runner(
         INSERT INTO core.runner (
             race_id, horse_id, horse_no, gate, jockey_id,
             trainer_id, carried_weight, body_weight, body_weight_diff,
-            data_kubun, trainer_code_raw, trainer_name_abbr,
+            sex, data_kubun, trainer_code_raw, trainer_name_abbr,
             jockey_code_raw, jockey_name_abbr
         ) VALUES (
             %(race_id)s,
@@ -243,7 +280,7 @@ def upsert_runner(
             ),
             %(horse_no)s, %(gate)s, %(jockey_id)s,
             %(trainer_id)s, %(carried_weight)s, %(body_weight)s, %(body_weight_diff)s,
-            %(data_kubun)s, %(trainer_code_raw)s, %(trainer_name_abbr)s,
+            %(sex)s, %(data_kubun)s, %(trainer_code_raw)s, %(trainer_name_abbr)s,
             %(jockey_code_raw)s, %(jockey_name_abbr)s
         )
         ON CONFLICT (race_id, horse_id) DO UPDATE SET
@@ -254,6 +291,7 @@ def upsert_runner(
             carried_weight = EXCLUDED.carried_weight,
             body_weight = EXCLUDED.body_weight,
             body_weight_diff = EXCLUDED.body_weight_diff,
+            sex = COALESCE(EXCLUDED.sex, core.runner.sex),
             data_kubun = EXCLUDED.data_kubun,
             trainer_code_raw = EXCLUDED.trainer_code_raw,
             trainer_name_abbr = EXCLUDED.trainer_name_abbr,
@@ -271,6 +309,7 @@ def upsert_runner(
             "carried_weight": runner.carried_weight,
             "body_weight": runner.body_weight,
             "body_weight_diff": runner.body_weight_diff,
+            "sex": runner.sex,
             "data_kubun": runner.data_kubun,
             "trainer_code_raw": runner.trainer_code_raw,
             "trainer_name_abbr": runner.trainer_name_abbr,
