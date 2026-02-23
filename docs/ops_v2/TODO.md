@@ -56,10 +56,10 @@
 
 ## Phase 3: Ranker学習
 
-- [ ] [P1] `scripts_v2/train_ranker_v2.py` を作成
-- [ ] [P1] Walk-forward + Group(`Race_ID`)分割を実装
-- [ ] [P1] OOFスコアとCV指標を保存
-- [ ] [P1] 2025 Hold-out封印ルールを実装
+- [x] [P1] `scripts_v2/train_ranker_v2.py` を作成
+- [x] [P1] Walk-forward + Group(`Race_ID`)分割を実装
+- [x] [P1] OOFスコアとCV指標を保存
+- [x] [P1] 2025 Hold-out封印ルールを実装
 
 ## Phase 4: Calibration
 
