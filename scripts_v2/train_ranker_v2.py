@@ -214,6 +214,7 @@ def _train_single_fold(
     categorical_cols: list[str],
     args: argparse.Namespace,
     fold: FoldSpec,
+    wandb_run: Any | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     _assert_fold_integrity(train_df, valid_df, fold.valid_year)
 
@@ -239,6 +240,11 @@ def _train_single_fold(
             seed=args.seed + fold.fold_id,
         )
     )
+    callbacks: list[Any] = [lgb.early_stopping(args.early_stopping_rounds, verbose=False)]
+    evals_result: dict[str, Any] = {}
+    if wandb_run is not None:
+        callbacks.append(lgb.record_evaluation(evals_result))
+
     model.fit(
         X_train,
         y_train,
@@ -248,8 +254,15 @@ def _train_single_fold(
         eval_at=[3],
         eval_metric="ndcg",
         categorical_feature=categorical_cols or "auto",
-        callbacks=[lgb.early_stopping(args.early_stopping_rounds, verbose=False)],
+        callbacks=callbacks,
     )
+    if wandb_run is not None:
+        _log_wandb_iteration_metrics(
+            wandb_run=wandb_run,
+            fold_id=fold.fold_id,
+            num_boost_round=args.num_boost_round,
+            evals_result=evals_result,
+        )
     best_iteration = int(getattr(model, "best_iteration_", 0) or args.num_boost_round)
     if best_iteration <= 0:
         best_iteration = int(args.num_boost_round)
@@ -314,6 +327,29 @@ def _train_final_model(
 def _save_json(path: Path, obj: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _log_wandb_iteration_metrics(
+    *,
+    wandb_run: Any,
+    fold_id: int,
+    num_boost_round: int,
+    evals_result: dict[str, Any],
+) -> None:
+    valid_metrics = evals_result.get("valid_0", {})
+    ndcg_values = valid_metrics.get("ndcg@3", [])
+    if not ndcg_values:
+        return
+    fold_offset = (fold_id - 1) * int(num_boost_round)
+    for iter_in_fold, ndcg_value in enumerate(ndcg_values, start=1):
+        wandb_run.log(
+            {
+                "cv/iter_step": int(fold_offset + iter_in_fold),
+                "cv/iter_fold": int(fold_id),
+                "cv/iter_in_fold": int(iter_in_fold),
+                "cv/iter_valid_ndcg_at3": float(ndcg_value),
+            }
+        )
 
 
 def _parse_wandb_tags(raw: str) -> list[str]:
@@ -403,6 +439,10 @@ def main(argv: list[str] | None = None) -> int:
         },
     )
     if wandb_run is not None:
+        wandb_run.define_metric("cv/iter_step")
+        wandb_run.define_metric("cv/iter_valid_ndcg_at3", step_metric="cv/iter_step")
+        wandb_run.define_metric("cv/iter_fold", step_metric="cv/iter_step")
+        wandb_run.define_metric("cv/iter_in_fold", step_metric="cv/iter_step")
         wandb_run.summary["planned_folds"] = int(len(folds))
 
     oof_list: list[pd.DataFrame] = []
@@ -430,6 +470,7 @@ def main(argv: list[str] | None = None) -> int:
             categorical_cols=categorical_cols,
             args=args,
             fold=fold,
+            wandb_run=wandb_run,
         )
         oof_list.append(fold_oof)
         fold_metrics_list.append(fold_metrics)
@@ -451,8 +492,7 @@ def main(argv: list[str] | None = None) -> int:
                     "cv/valid_rows": int(fold_metrics["valid_rows"]),
                     "cv/train_races": int(fold_metrics["train_races"]),
                     "cv/valid_races": int(fold_metrics["valid_races"]),
-                },
-                step=int(fold.fold_id),
+                }
             )
 
     if not oof_list:
