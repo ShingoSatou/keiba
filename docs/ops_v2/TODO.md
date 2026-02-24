@@ -66,7 +66,7 @@
 - [x] [P1] Optuna探索範囲を拡張し、best更新（`min_child_samples/reg_lambda/num_leaves`）
 - [x] [P1] `scripts_v2/tune_ranker_xgb_optuna_v2.py` を追加（XGBoost: TE有無 + 主要params）
 - [x] [P1] `scripts_v2/tune_ranker_cat_optuna_v2.py` を追加（CatBoost: TE有無 + 主要params）
-- [ ] [P1] XGBoost/CatBoostの Optuna を実行し、best params を記録（スタッキング用の候補確定）
+- [x] [P1] XGBoost/CatBoostの Optuna を実行し、best params を記録（スタッキング用の候補確定。XGB=300 trials / Cat=57 trials）
 
 ## Phase 4: Calibration
 
