@@ -47,6 +47,11 @@ def _hash_files(paths: list[Path]) -> str:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train v2 ranker (LightGBM LambdaRank).")
+    parser.add_argument(
+        "--params-json",
+        help="Optional JSON file to set default input/drop flags and LightGBM params. "
+        "Explicit CLI flags take precedence.",
+    )
     parser.add_argument("--input", default="data/features_v2.parquet")
     parser.add_argument("--oof-output", default="data/oof/ranker_oof.parquet")
     parser.add_argument("--metrics-output", default="data/oof/ranker_cv_metrics.json")
@@ -59,6 +64,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--early-stopping-rounds", type=int, default=DEFAULT_EARLY_STOPPING_ROUNDS)
     parser.add_argument("--learning-rate", type=float, default=0.05)
     parser.add_argument("--num-leaves", type=int, default=63)
+    parser.add_argument("--min-data-in-leaf", type=int, default=20)
+    parser.add_argument("--lambda-l1", type=float, default=0.0)
+    parser.add_argument("--lambda-l2", type=float, default=0.0)
+    parser.add_argument("--feature-fraction", type=float, default=1.0)
+    parser.add_argument("--bagging-fraction", type=float, default=1.0)
+    parser.add_argument("--bagging-freq", type=int, default=0)
+    parser.add_argument(
+        "--drop-entity-id-features",
+        action="store_true",
+        help="Drop high-cardinality entity ID features (jockey_key/trainer_key) to reduce overfit.",
+    )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--log-level", default="INFO")
     parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging.")
@@ -80,6 +96,53 @@ def _resolve_path(path_str: str) -> Path:
     if path.is_absolute():
         return path
     return (PROJECT_ROOT / path).resolve()
+
+
+def _argv_has_flag(argv: list[str], flag: str) -> bool:
+    prefix = f"{flag}="
+    for token in argv:
+        if token == flag or token.startswith(prefix):
+            return True
+    return False
+
+
+def _apply_params_json(
+    args: argparse.Namespace,
+    params: dict[str, Any],
+    *,
+    argv: list[str],
+) -> None:
+    if (
+        "input" in params
+        and isinstance(params["input"], str)
+        and not _argv_has_flag(argv, "--input")
+    ):
+        args.input = params["input"]
+
+    if "drop_entity_id_features" in params and not _argv_has_flag(
+        argv, "--drop-entity-id-features"
+    ):
+        args.drop_entity_id_features = bool(params["drop_entity_id_features"])
+
+    lgbm_params = params.get("lgbm_params")
+    if not isinstance(lgbm_params, dict):
+        return
+
+    mapping: dict[str, tuple[str, str]] = {
+        "learning_rate": ("learning_rate", "--learning-rate"),
+        "num_leaves": ("num_leaves", "--num-leaves"),
+        "min_child_samples": ("min_data_in_leaf", "--min-data-in-leaf"),
+        "reg_lambda": ("lambda_l2", "--lambda-l2"),
+        "reg_alpha": ("lambda_l1", "--lambda-l1"),
+        "feature_fraction": ("feature_fraction", "--feature-fraction"),
+        "bagging_fraction": ("bagging_fraction", "--bagging-fraction"),
+        "bagging_freq": ("bagging_freq", "--bagging-freq"),
+    }
+    for key, (attr, flag) in mapping.items():
+        if key not in lgbm_params or _argv_has_flag(argv, flag):
+            continue
+        value = lgbm_params[key]
+        setattr(args, attr, value)
 
 
 def _prepare_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
@@ -202,6 +265,13 @@ def _base_ranker_params(args: argparse.Namespace, *, n_estimators: int, seed: in
         "n_estimators": int(n_estimators),
         "learning_rate": float(args.learning_rate),
         "num_leaves": int(args.num_leaves),
+        "min_child_samples": int(args.min_data_in_leaf),
+        "reg_alpha": float(getattr(args, "lambda_l1", 0.0)),
+        "reg_lambda": float(args.lambda_l2),
+        # Use sklearn param names to avoid alias warnings in LightGBM logs.
+        "colsample_bytree": float(getattr(args, "feature_fraction", 1.0)),
+        "subsample": float(getattr(args, "bagging_fraction", 1.0)),
+        "subsample_freq": int(getattr(args, "bagging_freq", 0)),
         "random_state": int(seed),
         "n_jobs": -1,
     }
@@ -376,8 +446,18 @@ def _init_wandb_run(args: argparse.Namespace, *, config: dict[str, Any]):
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
+    argv_list = list(sys.argv[1:] if argv is None else argv)
+    args = parse_args(argv_list)
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO))
+
+    if args.params_json:
+        params_path = _resolve_path(args.params_json)
+        if not params_path.exists():
+            raise SystemExit(f"params-json not found: {params_path}")
+        params = json.loads(params_path.read_text(encoding="utf-8"))
+        if not isinstance(params, dict):
+            raise SystemExit("params-json must be a JSON object.")
+        _apply_params_json(args, params, argv=argv_list)
 
     if args.early_stopping_rounds <= 0:
         raise SystemExit("--early-stopping-rounds must be > 0")
@@ -385,6 +465,18 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--num-boost-round must be > 0")
     if args.train_window_years <= 0:
         raise SystemExit("--train-window-years must be > 0")
+    if args.min_data_in_leaf <= 0:
+        raise SystemExit("--min-data-in-leaf must be > 0")
+    if args.lambda_l1 < 0:
+        raise SystemExit("--lambda-l1 must be >= 0")
+    if args.lambda_l2 < 0:
+        raise SystemExit("--lambda-l2 must be >= 0")
+    if not (0.0 < float(args.feature_fraction) <= 1.0):
+        raise SystemExit("--feature-fraction must be in (0, 1].")
+    if not (0.0 < float(args.bagging_fraction) <= 1.0):
+        raise SystemExit("--bagging-fraction must be in (0, 1].")
+    if int(args.bagging_freq) < 0:
+        raise SystemExit("--bagging-freq must be >= 0")
 
     input_path = _resolve_path(args.input)
     oof_output = _resolve_path(args.oof_output)
@@ -409,6 +501,8 @@ def main(argv: list[str] | None = None) -> int:
         holdout_year=args.holdout_year,
     )
     feature_cols = _feature_columns(frame)
+    if args.drop_entity_id_features:
+        feature_cols = [c for c in feature_cols if c not in {"jockey_key", "trainer_key"}]
     if not feature_cols:
         raise SystemExit("No feature columns available for training.")
     categorical_cols = _categorical_features(feature_cols)
@@ -430,6 +524,13 @@ def main(argv: list[str] | None = None) -> int:
             "early_stopping_rounds": int(args.early_stopping_rounds),
             "learning_rate": float(args.learning_rate),
             "num_leaves": int(args.num_leaves),
+            "min_data_in_leaf": int(args.min_data_in_leaf),
+            "lambda_l1": float(args.lambda_l1),
+            "lambda_l2": float(args.lambda_l2),
+            "feature_fraction": float(args.feature_fraction),
+            "bagging_fraction": float(args.bagging_fraction),
+            "bagging_freq": int(args.bagging_freq),
+            "drop_entity_id_features": bool(args.drop_entity_id_features),
             "seed": int(args.seed),
             "objective": "lambdarank",
             "eval_at": [3],
@@ -564,6 +665,13 @@ def main(argv: list[str] | None = None) -> int:
             "early_stopping_rounds": int(args.early_stopping_rounds),
             "learning_rate": float(args.learning_rate),
             "num_leaves": int(args.num_leaves),
+            "min_data_in_leaf": int(args.min_data_in_leaf),
+            "lambda_l1": float(args.lambda_l1),
+            "lambda_l2": float(args.lambda_l2),
+            "feature_fraction": float(args.feature_fraction),
+            "bagging_fraction": float(args.bagging_fraction),
+            "bagging_freq": int(args.bagging_freq),
+            "drop_entity_id_features": bool(args.drop_entity_id_features),
             "seed": int(args.seed),
             "objective": "lambdarank",
             "eval_at": [3],

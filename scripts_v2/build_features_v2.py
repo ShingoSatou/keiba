@@ -332,6 +332,46 @@ def _compute_recent_entity_rate(df: pd.DataFrame, key_col: str, out_col: str) ->
     return data.drop(columns=["race_date_dt", "rate"])
 
 
+def _compute_recent_entity_target_mean(
+    df: pd.DataFrame,
+    key_col: str,
+    target_col: str,
+    out_col: str,
+    *,
+    prior_mean: float,
+) -> pd.DataFrame:
+    key_numeric = _numeric_code(df[key_col]).fillna(0).astype(int)
+    data = df.copy()
+    data[key_col] = key_numeric
+    data["race_date_dt"] = pd.to_datetime(data["race_date"], errors="coerce")
+    valid = data[key_col] > 0
+
+    if not valid.any():
+        data[out_col] = float(prior_mean)
+        return data.drop(columns=["race_date_dt"])
+
+    daily = (
+        data.loc[valid, [key_col, "race_date_dt", target_col]]
+        .groupby([key_col, "race_date_dt"], as_index=False)
+        .agg(target_sum=(target_col, "sum"), starts=(target_col, "size"))
+    )
+    daily["mean"] = np.nan
+    for idx in daily.groupby(key_col, sort=False).groups.values():
+        sub = daily.loc[list(idx)].sort_values("race_date_dt")
+        sum_series = pd.to_numeric(sub["target_sum"], errors="coerce").set_axis(sub["race_date_dt"])
+        cnt_series = pd.to_numeric(sub["starts"], errors="coerce").set_axis(sub["race_date_dt"])
+        roll_sum = sum_series.rolling(f"{WINDOW_6M_DAYS}D", closed="left").sum()
+        roll_cnt = cnt_series.rolling(f"{WINDOW_6M_DAYS}D", closed="left").sum()
+        mean = (roll_sum + PRIOR_N * float(prior_mean)) / (roll_cnt + PRIOR_N)
+        daily.loc[sub.index, "mean"] = mean.to_numpy()
+
+    data = data.merge(
+        daily[[key_col, "race_date_dt", "mean"]], on=[key_col, "race_date_dt"], how="left"
+    )
+    data[out_col] = data["mean"].fillna(float(prior_mean))
+    return data.drop(columns=["race_date_dt", "mean"])
+
+
 def _add_relative_features(df: pd.DataFrame) -> pd.DataFrame:
     race_group = df.groupby("race_id", sort=False)
     df["rel_lag1_speed_index_z"] = race_group["lag1_speed_index"].transform(_zscore)
@@ -346,6 +386,9 @@ def _add_relative_features(df: pd.DataFrame) -> pd.DataFrame:
     )
     df["rel_carried_weight_z"] = race_group["carried_weight"].transform(_zscore)
     df["rel_jockey_top3_rate_z"] = race_group["jockey_top3_rate_6m"].transform(_zscore)
+    df["rel_jockey_target_label_mean_z"] = race_group["jockey_target_label_mean_6m"].transform(
+        _zscore
+    )
     df["rel_meta_tm_score_z"] = race_group["meta_tm_score"].transform(_zscore)
     return df
 
@@ -580,11 +623,14 @@ def _feature_columns() -> list[str]:
         "meta_tm_rank",
         "jockey_top3_rate_6m",
         "trainer_top3_rate_6m",
+        "jockey_target_label_mean_6m",
+        "trainer_target_label_mean_6m",
         "rel_lag1_speed_index_z",
         "rel_lag1_speed_index_rank",
         "rel_lag1_speed_index_pct",
         "rel_carried_weight_z",
         "rel_jockey_top3_rate_z",
+        "rel_jockey_target_label_mean_z",
         "rel_meta_tm_score_z",
     ]
 
@@ -668,6 +714,21 @@ def build_features_dataframe(
     df = _compute_aptitude_features(df)
     df = _compute_recent_entity_rate(df, "jockey_key", "jockey_top3_rate_6m")
     df = _compute_recent_entity_rate(df, "trainer_key", "trainer_top3_rate_6m")
+    prior_label_mean = float(pd.to_numeric(df["target_label"], errors="coerce").mean())
+    df = _compute_recent_entity_target_mean(
+        df,
+        "jockey_key",
+        "target_label",
+        "jockey_target_label_mean_6m",
+        prior_mean=prior_label_mean,
+    )
+    df = _compute_recent_entity_target_mean(
+        df,
+        "trainer_key",
+        "target_label",
+        "trainer_target_label_mean_6m",
+        prior_mean=prior_label_mean,
+    )
 
     output_mask = (pd.to_datetime(df["race_date"]) >= pd.to_datetime(from_date)) & (
         pd.to_datetime(df["race_date"]) <= pd.to_datetime(to_date)
