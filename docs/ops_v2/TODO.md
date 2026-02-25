@@ -56,10 +56,17 @@
 
 ## Phase 3: Ranker学習
 
-- [ ] [P1] `scripts_v2/train_ranker_v2.py` を作成
-- [ ] [P1] Walk-forward + Group(`Race_ID`)分割を実装
-- [ ] [P1] OOFスコアとCV指標を保存
-- [ ] [P1] 2025 Hold-out封印ルールを実装
+- [x] [P1] `scripts_v2/train_ranker_v2.py` を作成
+- [x] [P1] Walk-forward + Group(`Race_ID`)分割を実装
+- [x] [P1] OOFスコアとCV指標を保存
+- [x] [P1] 2025 Hold-out封印ルールを実装
+- [x] [P2] `scripts_v2/diagnose_ranker_generalization_v2.py` を追加（リーク候補/正則化比較/条件別分解/PSI+KS）
+- [x] [P1] `scripts_v2/tune_ranker_optuna_v2.py` を追加（Optuna: TE有無 + LGBM主要params、Rolling=5年、`trainer_key/jockey_key` 生IDは常に除外）
+- [x] [P1] Optuna 300 trials を実行し、best params を `train_ranker_v2.py --params-json` で反映（運用手順の固定化）
+- [x] [P1] Optuna探索範囲を拡張し、best更新（`min_child_samples/reg_lambda/num_leaves`）
+- [x] [P1] `scripts_v2/tune_ranker_xgb_optuna_v2.py` を追加（XGBoost: TE有無 + 主要params）
+- [x] [P1] `scripts_v2/tune_ranker_cat_optuna_v2.py` を追加（CatBoost: TE有無 + 主要params）
+- [x] [P1] XGBoost/CatBoostの Optuna を実行し、best params を記録（スタッキング用の候補確定。XGB=300 trials / Cat=57 trials）
 
 ## Phase 4: Calibration
 

@@ -7,6 +7,7 @@ import pytest
 from scripts_v2.build_features_v2 import (
     _add_lag_features,
     _apply_segment_filter,
+    _compute_recent_entity_target_mean,
     _time_window_stats_by_group,
     assert_no_future_leakage,
     assert_sorted,
@@ -100,3 +101,33 @@ def test_sorted_guard_detects_order_violation():
     ng = pd.DataFrame({"race_id": [1, 1, 2], "horse_no": [2, 1, 1]})
     with pytest.raises(ValueError):
         assert_sorted(ng)
+
+
+def test_target_encoding_excludes_current_date():
+    df = pd.DataFrame(
+        {
+            "race_date": pd.to_datetime(
+                ["2024-01-01", "2024-01-01", "2024-01-02", "2024-01-02"]
+            ).date,
+            "jockey_key": [100, 100, 100, 200],
+            "target_label": [3, 0, 3, 0],
+        }
+    )
+    out = _compute_recent_entity_target_mean(
+        df,
+        "jockey_key",
+        "target_label",
+        "jockey_target_label_mean_6m",
+        prior_mean=0.5,
+    )
+
+    # same day should not see its own target_label (closed='left' on date)
+    day1 = out[out["race_date"] == pd.to_datetime("2024-01-01").date()]
+    assert day1["jockey_target_label_mean_6m"].to_list() == pytest.approx([0.5, 0.5])
+
+    # next day should incorporate day1's mean for jockey_key=100
+    day2_j100 = out[
+        (out["race_date"] == pd.to_datetime("2024-01-02").date()) & (out["jockey_key"] == 100)
+    ]
+    assert len(day2_j100) == 1
+    assert float(day2_j100.iloc[0]["jockey_target_label_mean_6m"]) > 0.5
