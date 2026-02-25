@@ -372,7 +372,7 @@ def _compute_recent_entity_target_mean(
     return data.drop(columns=["race_date_dt", "mean"])
 
 
-def _add_relative_features(df: pd.DataFrame) -> pd.DataFrame:
+def _add_relative_features(df: pd.DataFrame, *, with_te: bool) -> pd.DataFrame:
     race_group = df.groupby("race_id", sort=False)
     df["rel_lag1_speed_index_z"] = race_group["lag1_speed_index"].transform(_zscore)
     df["rel_lag1_speed_index_rank"] = race_group["lag1_speed_index"].rank(
@@ -386,9 +386,10 @@ def _add_relative_features(df: pd.DataFrame) -> pd.DataFrame:
     )
     df["rel_carried_weight_z"] = race_group["carried_weight"].transform(_zscore)
     df["rel_jockey_top3_rate_z"] = race_group["jockey_top3_rate_6m"].transform(_zscore)
-    df["rel_jockey_target_label_mean_z"] = race_group["jockey_target_label_mean_6m"].transform(
-        _zscore
-    )
+    if with_te and "jockey_target_label_mean_6m" in df.columns:
+        df["rel_jockey_target_label_mean_z"] = race_group["jockey_target_label_mean_6m"].transform(
+            _zscore
+        )
     df["rel_meta_tm_score_z"] = race_group["meta_tm_score"].transform(_zscore)
     return df
 
@@ -578,8 +579,8 @@ def _target_label(series: pd.Series) -> pd.Series:
     return pd.Series(label, index=series.index, dtype=int)
 
 
-def _feature_columns() -> list[str]:
-    return [
+def _feature_columns(*, with_te: bool) -> list[str]:
+    cols = [
         "race_id",
         "horse_id",
         "horse_no",
@@ -623,16 +624,22 @@ def _feature_columns() -> list[str]:
         "meta_tm_rank",
         "jockey_top3_rate_6m",
         "trainer_top3_rate_6m",
-        "jockey_target_label_mean_6m",
-        "trainer_target_label_mean_6m",
         "rel_lag1_speed_index_z",
         "rel_lag1_speed_index_rank",
         "rel_lag1_speed_index_pct",
         "rel_carried_weight_z",
         "rel_jockey_top3_rate_z",
-        "rel_jockey_target_label_mean_z",
         "rel_meta_tm_score_z",
     ]
+    if with_te:
+        cols.extend(
+            [
+                "jockey_target_label_mean_6m",
+                "trainer_target_label_mean_6m",
+                "rel_jockey_target_label_mean_z",
+            ]
+        )
+    return cols
 
 
 def build_features_dataframe(
@@ -640,6 +647,8 @@ def build_features_dataframe(
     from_date: date,
     to_date: date,
     history_days: int,
+    *,
+    with_te: bool,
 ) -> pd.DataFrame:
     history_from = from_date - timedelta(days=history_days)
     df = _load_base_data(db, history_from=history_from, to_date=to_date)
@@ -714,30 +723,31 @@ def build_features_dataframe(
     df = _compute_aptitude_features(df)
     df = _compute_recent_entity_rate(df, "jockey_key", "jockey_top3_rate_6m")
     df = _compute_recent_entity_rate(df, "trainer_key", "trainer_top3_rate_6m")
-    prior_label_mean = float(pd.to_numeric(df["target_label"], errors="coerce").mean())
-    df = _compute_recent_entity_target_mean(
-        df,
-        "jockey_key",
-        "target_label",
-        "jockey_target_label_mean_6m",
-        prior_mean=prior_label_mean,
-    )
-    df = _compute_recent_entity_target_mean(
-        df,
-        "trainer_key",
-        "target_label",
-        "trainer_target_label_mean_6m",
-        prior_mean=prior_label_mean,
-    )
+    if with_te:
+        prior_label_mean = float(pd.to_numeric(df["target_label"], errors="coerce").mean())
+        df = _compute_recent_entity_target_mean(
+            df,
+            "jockey_key",
+            "target_label",
+            "jockey_target_label_mean_6m",
+            prior_mean=prior_label_mean,
+        )
+        df = _compute_recent_entity_target_mean(
+            df,
+            "trainer_key",
+            "target_label",
+            "trainer_target_label_mean_6m",
+            prior_mean=prior_label_mean,
+        )
 
     output_mask = (pd.to_datetime(df["race_date"]) >= pd.to_datetime(from_date)) & (
         pd.to_datetime(df["race_date"]) <= pd.to_datetime(to_date)
     )
     output_df = df.loc[output_mask].copy()
     output_df = _apply_segment_filter(output_df)
-    output_df = _add_relative_features(output_df)
+    output_df = _add_relative_features(output_df, with_te=with_te)
     output_df = output_df.sort_values(["race_id", "horse_no"], kind="mergesort")
-    output_df = output_df[_feature_columns()].copy()
+    output_df = output_df[_feature_columns(with_te=with_te)].copy()
     assert_sorted(output_df)
     return output_df
 
@@ -756,6 +766,8 @@ def write_outputs(
     from_date: date,
     to_date: date,
     history_days: int,
+    *,
+    with_te: bool,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     meta_path.parent.mkdir(parents=True, exist_ok=True)
@@ -770,6 +782,7 @@ def write_outputs(
         "from_date": str(from_date),
         "to_date": str(to_date),
         "history_days": history_days,
+        "with_te": bool(with_te),
         "rows": int(len(features)),
         "races": int(features["race_id"].nunique()) if not features.empty else 0,
         "columns": features.columns.tolist(),
@@ -797,6 +810,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--from-date", required=True, help="Output start date (YYYY-MM-DD).")
     parser.add_argument("--to-date", required=True, help="Output end date (YYYY-MM-DD).")
     parser.add_argument("--history-days", type=int, default=DEFAULT_HISTORY_DAYS)
+    parser.add_argument(
+        "--with-te",
+        action="store_true",
+        help="Include target encoding features (jockey/trainer rolling target_label mean).",
+    )
     parser.add_argument("--output", default="data/features_v2.parquet")
     parser.add_argument("--meta-output", default="data/features_v2_meta.json")
     parser.add_argument("--log-level", default="INFO")
@@ -821,6 +839,7 @@ def main(argv: list[str] | None = None) -> int:
             from_date=from_date,
             to_date=to_date,
             history_days=args.history_days,
+            with_te=bool(args.with_te),
         )
 
     if features.empty:
@@ -833,6 +852,7 @@ def main(argv: list[str] | None = None) -> int:
         from_date=from_date,
         to_date=to_date,
         history_days=args.history_days,
+        with_te=bool(args.with_te),
     )
     logger.info("wrote %s", output_path)
     logger.info("wrote %s", meta_path)
