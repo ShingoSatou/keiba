@@ -165,7 +165,8 @@ def _evaluate_on_select_year(
     seed: int,
     early_stopping_rounds: int,
 ) -> float:
-    train_df = frame[frame["valid_year"].isin(train_years)].copy()
+    effective_train_years = [int(year) for year in train_years if int(year) != int(select_year)]
+    train_df = frame[frame["valid_year"].isin(effective_train_years)].copy()
     valid_df = frame[frame["valid_year"] == int(select_year)].copy()
     if train_df.empty or valid_df.empty:
         return float("nan")
@@ -215,6 +216,8 @@ def main(argv: list[str] | None = None) -> int:
 
     available_years = sorted(merged["valid_year"].unique().tolist())
     tune_years = _parse_years(args.tune_years)
+    if int(args.select_year) in tune_years:
+        raise SystemExit("--tune-years must not include --select-year.")
     tune_frame = merged[merged["valid_year"].isin(tune_years)].copy()
     if tune_frame.empty:
         raise SystemExit(

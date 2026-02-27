@@ -327,10 +327,18 @@ def main(argv: list[str] | None = None) -> int:
         ),
     }
 
+    full_model_params = dict(params)
+    if method == "lgbm_ranker" and fold_best_iterations:
+        full_model_params["n_estimators"] = int(np.median(fold_best_iterations))
+        logger.info(
+            "full-model n_estimators=%s (median fold best_iteration)",
+            int(full_model_params["n_estimators"]),
+        )
+
     full_train_df = frame.copy()
     full_model, full_extra = _fit_full_model(
         method,
-        params,
+        full_model_params,
         full_train_df,
         feature_cols,
         seed=int(args.seed) + 7777,
@@ -342,6 +350,7 @@ def main(argv: list[str] | None = None) -> int:
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "method": method,
         "params": params,
+        "full_model_params": full_model_params,
         "feature_columns": feature_cols,
         "train_years": train_years,
         "folds": fold_metrics,
@@ -365,6 +374,7 @@ def main(argv: list[str] | None = None) -> int:
         "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "method": method,
         "params": params,
+        "full_model_params": full_model_params,
         "feature_columns": feature_cols,
         "train_years": train_years,
         "holdout_rule": "year 2025 is one-shot test only",

@@ -112,6 +112,24 @@ def merge_ranker_oofs(lgbm_path: Path, xgb_path: Path, cat_path: Path) -> pd.Dat
     xgb = load_ranker_oof(xgb_path, "xgb")
     cat = load_ranker_oof(cat_path, "cat")
 
+    if len(lgbm) != len(xgb) or len(lgbm) != len(cat):
+        raise ValueError(
+            f"OOF row count mismatch across models: lgbm={len(lgbm)} xgb={len(xgb)} cat={len(cat)}"
+        )
+
+    if not lgbm[KEY_COLUMNS].equals(xgb[KEY_COLUMNS]) or not lgbm[KEY_COLUMNS].equals(
+        cat[KEY_COLUMNS]
+    ):
+        common_rows = len(
+            lgbm[KEY_COLUMNS]
+            .merge(xgb[KEY_COLUMNS], on=KEY_COLUMNS, how="inner")
+            .merge(cat[KEY_COLUMNS], on=KEY_COLUMNS, how="inner")
+        )
+        raise ValueError(
+            "OOF key mismatch across models: "
+            f"lgbm={len(lgbm)} xgb={len(xgb)} cat={len(cat)} common={common_rows}"
+        )
+
     merged = lgbm.merge(
         xgb[
             KEY_COLUMNS
@@ -145,10 +163,10 @@ def merge_ranker_oofs(lgbm_path: Path, xgb_path: Path, cat_path: Path) -> pd.Dat
         suffixes=("", "_cat"),
     )
 
-    expected_rows = len(lgbm)
-    if len(merged) != expected_rows:
+    if len(merged) != len(lgbm) or len(merged) != len(xgb) or len(merged) != len(cat):
         raise ValueError(
-            f"OOF alignment mismatch across models: lgbm={len(lgbm)} merged={len(merged)}"
+            "OOF alignment mismatch across models after merge: "
+            f"lgbm={len(lgbm)} xgb={len(xgb)} cat={len(cat)} merged={len(merged)}"
         )
 
     for column in ("target_label", "valid_year"):

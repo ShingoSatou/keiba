@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from scripts_v2.ranker_stacking_v2_common import (
     add_meta_features,
@@ -53,6 +54,19 @@ def test_merge_ranker_oofs_aligns_rows(tmp_path):
     assert len(merged) == 18
     assert {"lgbm_score", "xgb_score", "cat_score"}.issubset(set(merged.columns))
     assert merged["valid_year"].unique().tolist() == [2021, 2022, 2023]
+
+
+def test_merge_ranker_oofs_raises_on_row_count_mismatch(tmp_path):
+    lgbm_path = tmp_path / "lgbm.parquet"
+    xgb_path = tmp_path / "xgb.parquet"
+    cat_path = tmp_path / "cat.parquet"
+
+    _make_oof(0.0).to_parquet(lgbm_path, index=False)
+    _make_oof(0.1).iloc[:-1].to_parquet(xgb_path, index=False)
+    _make_oof(-0.2).to_parquet(cat_path, index=False)
+
+    with pytest.raises(ValueError, match="OOF row count mismatch"):
+        merge_ranker_oofs(lgbm_path, xgb_path, cat_path)
 
 
 def test_meta_features_and_convex_prediction():
