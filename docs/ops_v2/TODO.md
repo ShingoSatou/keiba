@@ -67,13 +67,17 @@
 - [x] [P1] `scripts_v2/tune_ranker_xgb_optuna_v2.py` を追加（XGBoost: TE有無 + 主要params）
 - [x] [P1] `scripts_v2/tune_ranker_cat_optuna_v2.py` を追加（CatBoost: TE有無 + 主要params）
 - [x] [P1] XGBoost/CatBoostの Optuna を実行し、best params を記録（スタッキング用の候補確定。XGB=300 trials / Cat=57 trials）
+- [x] [P1] `scripts_v2/train_ranker_xgb_v2.py` / `scripts_v2/train_ranker_cat_v2.py` を追加（Rolling CV + OOF保存）
+- [x] [P1] `scripts_v2/tune_ranker_stacker_optuna_v2.py` / `scripts_v2/train_ranker_stacker_v2.py` を追加（メタ方式チューニング + 選抜 + walk-forward OOF）
+- [x] [P1] `scripts_v2/eval_ranker_stacker_holdout_v2.py` / `scripts_v2/eval_ranker_stacker_holdout_compare_v2.py` を追加（holdout年の推論 + NDCG@3）
+- [x] [P1] 2025 holdout（Ranker stacking）NDCG@3 を one-shot で記録（best=convex, 0.483300）
 
 ## Phase 4: Calibration
 
-- [ ] [P1] `scripts_v2/train_calibrator_v2.py` を作成
-- [ ] [P1] OOF由来特徴のみでTop3確率を学習
-- [ ] [P1] Logloss/Brier/Reliabilityを出力
-- [ ] [P1] 校正済みOOFを保存
+- [x] [P1] `scripts_v2/train_calibrator_v2.py` を作成
+- [x] [P1] OOF由来特徴のみでTop3確率を学習
+- [x] [P1] Logloss/Brier/Reliabilityを出力
+- [x] [P1] 校正済みOOFを保存
 
 ## Phase 5: Wide確率 + バックテスト
 
