@@ -1,41 +1,55 @@
 ## 目的 / 背景
-- v2（ワイド / Listwise / NDCG@3）実装を進めるため、Phase 1（DB構築 + JSONL投入）を実運用可能な形にする
-- v1/v2混在状態のまま誤参照しないよう、v2ディレクトリ命名とドキュメントを整理する
+- Ranker v2 の推論強化のため、3モデル（LightGBM / XGBoost / CatBoost）の stacking を導入する
+- Rolling CV（valid=2021-2024, holdout=2025）とリークなしのメタ学習手順を固定し、2025で one-shot 評価する
 
 ## 変更内容
-- v2ディレクトリを明確化
-  - `migrations` -> `migrations_v2`
-  - `scripts` -> `scripts_v2`
-  - `tests` -> `test_v2`
-- Phase 1実装を追加
-  - `migrations_v2/0001`〜`0005` を追加
-  - `scripts_v2/migrate.py` / `scripts_v2/load_to_db.py` を追加
-  - `app/infrastructure/parsers.py` に O3（ワイド確定オッズ）パーサを追加
-  - WH（馬体重）パース定義を仕様に合わせて修正
-- テスト追加
-  - `test_v2/test_parsers.py`
-  - `test_v2/test_load_to_db.py`
-  - `test_v2/test_migrate_discover.py`
-- 設定/ドキュメント更新
-  - `pyproject.toml` の pytest/ruff 対象を v2 構成へ更新
-  - `README.md` を v2 PoC 前提に刷新
-  - `docs/ops_v2/実装計画.md` を進捗分離 + フェーズ詳細化
-  - `docs/ops_v2/TODO.md` に品質メモ追記
-  - `docs/ops_v2/スクリプトリファレンス.md` を新規作成
-- 不要スクリプト整理
-  - `setup_postgres.sh` を削除（`setup_postgres_multi.sh` に一本化）
+### 1) Base ranker（XGB/Cat）学習スクリプト追加
+- `scripts_v2/train_ranker_xgb_v2.py` / `scripts_v2/train_ranker_cat_v2.py`
+  - LightGBM と同一の Rolling 設計で OOF を生成
+  - OOF列仕様を揃え、stacking 入力（score/rank/percentile）に利用可能にする
 
-## 影響範囲
-- v2 の DBマイグレーション/投入手順（`scripts_v2/*`）
-- v2 テスト実行パス（`test_v2`）
-- README と運用ドキュメント
-- 既存 v1 実装（`scripts_v1`, `tests_v1`, `migrations_v1`）には変更なし
+### 2) Stacking（メタ学習）実装
+- `scripts_v2/ranker_stacking_v2_common.py`
+  - 3モデルOOFの結合、メタ特徴量（percentile派生）生成、NDCG@3評価の共通処理
+- `scripts_v2/tune_ranker_stacker_optuna_v2.py`
+  - tune_years（既定: 2021-2023）で各メタ方式を Optuna tuning
+  - select_year（既定: 2024）で方式選抜
+- `scripts_v2/train_ranker_stacker_v2.py`
+  - 選抜方式で固定パラメータの walk-forward OOF（2022-2024）を生成し、最終メタモデルを保存
+
+### 3) Holdout 評価（2025）
+- `scripts_v2/eval_ranker_stacker_holdout_v2.py`
+  - `models/ranker_stack_meta.model`（選抜済みメタモデル）で holdout を評価
+- `scripts_v2/eval_ranker_stacker_holdout_compare_v2.py`
+  - holdout 年でメタ方式を横並び比較（one-shot、上書きは `--force` が必要）
+
+### 4) テスト追加
+- `test_v2/test_ranker_stacker_v2_common.py`
+
+### 5) ドキュメント更新
+- `docs/ops_v2/スクリプトリファレンス.md`
+  - stacking 学習/評価スクリプト、2025評価手順を追記
+- `docs/ops_v2/Rankerスタッキング_2025評価.md`
+  - 2025 holdout（one-shot）の結果・考察・推奨方式を整理
+- `docs/specs_v2/時系列交差検証およびモデル評価仕様書.md`
+  - holdout成果物と2025 one-shot（NDCG@3）結果を追記
+- `docs/ops_v2/TODO.md` / `docs/ops_v2/実装計画.md`
+  - stacking 実装分を反映
+
+## 2025 holdout NDCG@3（one-shot, 2026-02-27）
+- base: `xgb=0.481491` / `lgbm=0.477957` / `cat=0.475639`
+- stacking: `convex=0.483300`（best） / `ridge=0.479149` / `logreg_multiclass=0.478234` / `lgbm_ranker=0.478096`
 
 ## 動作確認（実施済み）
-- [x] `uv run ruff format .`
 - [x] `uv run ruff check .`
+- [x] `uv run ruff format --check .`
 - [x] `uv run pytest -q`
 
-## リスク / 注意点
-- `core.race` の `class_code/条件コード` は Phase 2 で特徴量抽出条件に使うため、必要に応じて RA パース拡張が必要
-- 品質メモ（stub race/オッズ欠損/取消horse_no=99）は `docs/ops_v2/TODO.md` を参照
+## 影響範囲
+- v2 の Ranker 学習/評価（stacking含む）：`scripts_v2/*`
+- v2 テスト：`test_v2/*`
+- v2 ドキュメント：`docs/ops_v2/*`, `docs/specs_v2/*`
+
+## 注意点
+- `data/` / `models/` はGit管理外（評価結果は `data/holdout/` に保存）
+- holdout（2025）は one-shot 運用前提のため、`--force` による再実行は慎重に扱う
