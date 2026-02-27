@@ -321,11 +321,18 @@ def main(argv: list[str] | None = None) -> int:
             scored[f"stack_{method}_score"] = predict_logreg_expected(model, scored, feature_cols)
 
         elif method == "lgbm_ranker":
+            fit_params = dict(params)
+            fold_best_iter = summary.get("best_fold_best_iteration", {})
+            if isinstance(fold_best_iter, dict):
+                values = [int(value) for value in fold_best_iter.values() if value is not None]
+                if values:
+                    fit_params["n_estimators"] = int(np.median(values))
+            method_params[method] = fit_params
             model, best_iter = fit_lgbm_ranker(
                 train_df,
                 valid_df=None,
                 feature_cols=feature_cols,
-                params=params,
+                params=fit_params,
                 seed=int(args.seed) + 9999,
                 early_stopping_rounds=int(args.early_stopping_rounds),
             )

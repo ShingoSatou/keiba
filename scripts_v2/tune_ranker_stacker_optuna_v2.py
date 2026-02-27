@@ -218,6 +218,12 @@ def main(argv: list[str] | None = None) -> int:
     tune_years = _parse_years(args.tune_years)
     if int(args.select_year) in tune_years:
         raise SystemExit("--tune-years must not include --select-year.")
+    missing_tune_years = sorted(set(tune_years) - set(available_years))
+    if missing_tune_years:
+        raise SystemExit(
+            "tune_years not found in available_valid_years: "
+            f"missing={missing_tune_years}, available={available_years}"
+        )
     tune_frame = merged[merged["valid_year"].isin(tune_years)].copy()
     if tune_frame.empty:
         raise SystemExit(
