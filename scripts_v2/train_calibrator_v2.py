@@ -79,10 +79,7 @@ def _check_overwrite(outputs: list[Path], *, force: bool) -> None:
     existing = [path for path in outputs if path.exists()]
     if existing and not force:
         joined = ", ".join(str(path) for path in existing)
-        raise SystemExit(
-            "output already exists. pass --force to overwrite: "
-            f"{joined}"
-        )
+        raise SystemExit(f"output already exists. pass --force to overwrite: {joined}")
 
 
 def _fit_calibrator(
@@ -145,8 +142,7 @@ def main(argv: list[str] | None = None) -> int:
     frame_feat = frame_feat[frame_feat["valid_year"] < int(args.holdout_year)].copy()
     if frame_feat.empty:
         raise SystemExit(
-            "No rows remain after holdout-year filter "
-            f"(valid_year < {int(args.holdout_year)})."
+            f"No rows remain after holdout-year filter (valid_year < {int(args.holdout_year)})."
         )
 
     available_years = sorted(frame_feat["valid_year"].unique().tolist())
@@ -162,10 +158,7 @@ def main(argv: list[str] | None = None) -> int:
         train_years = available_years
 
     if len(train_years) < 2:
-        raise SystemExit(
-            "Need at least two years for walk-forward calibration. "
-            f"got={train_years}"
-        )
+        raise SystemExit(f"Need at least two years for walk-forward calibration. got={train_years}")
 
     frame = frame_feat[frame_feat["valid_year"].isin(train_years)].copy()
     if frame.empty:

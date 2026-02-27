@@ -74,10 +74,7 @@ def _infer_score_col(args: argparse.Namespace, holdout_df: pd.DataFrame) -> str:
         return args.score_col.strip()
     stack_meta_path = resolve_path(args.stack_meta)
     if not stack_meta_path.exists():
-        raise SystemExit(
-            "--score-col is empty and stack-meta file not found: "
-            f"{stack_meta_path}"
-        )
+        raise SystemExit(f"--score-col is empty and stack-meta file not found: {stack_meta_path}")
     stack_meta = _load_json(stack_meta_path)
     method = str(stack_meta.get("method", "")).strip()
     if not method:
@@ -161,19 +158,19 @@ def main(argv: list[str] | None = None) -> int:
     preds = preds.rename(columns={score_col: "input_score"})
     preds["valid_year"] = int(args.year)
     preds["p_top3"] = p_top3
-    preds = preds[
-        [
-            "race_id",
-            "horse_id",
-            "horse_no",
-            "race_date",
-            "valid_year",
-            "p_top3",
-            "input_score",
-            "target_label",
-            "field_size",
-        ]
+    pred_columns = [
+        "race_id",
+        "horse_id",
+        "horse_no",
+        "valid_year",
+        "p_top3",
+        "input_score",
+        "target_label",
+        "field_size",
     ]
+    if "race_date" in preds.columns:
+        pred_columns.insert(3, "race_date")
+    preds = preds[pred_columns]
     preds = preds.sort_values(["race_id", "horse_no"], kind="mergesort")
     preds_output.parent.mkdir(parents=True, exist_ok=True)
     preds.to_parquet(preds_output, index=False)

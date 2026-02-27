@@ -115,25 +115,23 @@ def build_calibration_features(
 
     race_mean = out.groupby("race_id", sort=False)[score_col].transform("mean")
     race_std = out.groupby("race_id", sort=False)[score_col].transform("std").replace(0.0, np.nan)
-    out["z_score"] = ((out[score_col] - race_mean) / race_std).replace(
-        [np.inf, -np.inf], np.nan
-    ).fillna(0.0)
+    out["z_score"] = (
+        ((out[score_col] - race_mean) / race_std).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    )
 
     top_score = out.groupby("race_id", sort=False)[score_col].transform("max")
     out["score_diff_from_top"] = top_score - out[score_col]
 
-    gap_map = (
-        out.groupby("race_id", sort=False)[score_col]
-        .apply(_gap_1st_to_3rd)
-        .to_dict()
-    )
+    gap_map = out.groupby("race_id", sort=False)[score_col].apply(_gap_1st_to_3rd).to_dict()
     out["gap_1st_to_3rd"] = out["race_id"].map(gap_map).astype(float)
     out["is_top3"] = (out["target_label"] > 0).astype(int)
 
     for column in CALIBRATION_FEATURE_COLUMNS:
-        out[column] = pd.to_numeric(out[column], errors="coerce").replace(
-            [np.inf, -np.inf], np.nan
-        ).fillna(0.0)
+        out[column] = (
+            pd.to_numeric(out[column], errors="coerce")
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0.0)
+        )
 
     out = out.sort_values(["race_id", "horse_no"], kind="mergesort").reset_index(drop=True)
     return out, list(CALIBRATION_FEATURE_COLUMNS)
