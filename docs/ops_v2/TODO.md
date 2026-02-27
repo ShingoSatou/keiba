@@ -74,10 +74,10 @@
 
 ## Phase 4: Calibration
 
-- [ ] [P1] `scripts_v2/train_calibrator_v2.py` を作成
-- [ ] [P1] OOF由来特徴のみでTop3確率を学習
-- [ ] [P1] Logloss/Brier/Reliabilityを出力
-- [ ] [P1] 校正済みOOFを保存
+- [x] [P1] `scripts_v2/train_calibrator_v2.py` を作成
+- [x] [P1] OOF由来特徴のみでTop3確率を学習
+- [x] [P1] Logloss/Brier/Reliabilityを出力
+- [x] [P1] 校正済みOOFを保存
 
 ## Phase 5: Wide確率 + バックテスト
 
