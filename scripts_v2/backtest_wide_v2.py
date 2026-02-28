@@ -143,9 +143,7 @@ def select_backtest_years(
 ) -> tuple[pd.DataFrame, list[int], list[int]]:
     base = frame[frame["valid_year"] < int(holdout_year)].copy()
     if base.empty:
-        raise SystemExit(
-            f"No rows remain after holdout filter (valid_year < {int(holdout_year)})."
-        )
+        raise SystemExit(f"No rows remain after holdout filter (valid_year < {int(holdout_year)}).")
     available = sorted(base["valid_year"].unique().tolist())
 
     required_years = parse_years(require_years_arg)

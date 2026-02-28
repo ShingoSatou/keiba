@@ -52,9 +52,7 @@ class SweepResult:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Sweep min p_wide threshold on OOF years (v2)."
-    )
+    parser = argparse.ArgumentParser(description="Sweep min p_wide threshold on OOF years (v2).")
     parser.add_argument("--input", default="data/oof/top3_convex_oof_cw_none.parquet")
     parser.add_argument(
         "--years",
@@ -160,9 +158,7 @@ def select_years(
 ) -> tuple[pd.DataFrame, list[int], list[int]]:
     base = frame[frame["valid_year"] < int(holdout_year)].copy()
     if base.empty:
-        raise SystemExit(
-            f"No rows remain after holdout filter (valid_year < {int(holdout_year)})."
-        )
+        raise SystemExit(f"No rows remain after holdout filter (valid_year < {int(holdout_year)}).")
     available = sorted(base["valid_year"].unique().tolist())
 
     required_years = parse_years(require_years_arg)

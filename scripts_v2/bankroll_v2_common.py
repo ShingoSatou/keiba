@@ -130,8 +130,10 @@ def apply_daily_cap(
 
     scale = float(cap_yen) / float(total_bet)
     out = bet_df.copy()
-    out["bet_yen"] = pd.to_numeric(out["bet_yen"], errors="coerce").fillna(0.0).map(
-        lambda value: round_down_to_unit(float(value) * scale, int(bet_unit_yen))
+    out["bet_yen"] = (
+        pd.to_numeric(out["bet_yen"], errors="coerce")
+        .fillna(0.0)
+        .map(lambda value: round_down_to_unit(float(value) * scale, int(bet_unit_yen)))
     )
     out = out[out["bet_yen"] >= int(min_bet_yen)].copy()
     out["bet_yen"] = out["bet_yen"].astype(int)
