@@ -81,11 +81,13 @@
 
 ## Phase 5: Wide確率 + バックテスト
 
-- [ ] [P1] `scripts_v2/backtest_wide_v2.py` を作成
-- [ ] [P1] PL + Monte Carloでwide同時確率を推定
-- [ ] [P1] EVフィルタとfractional Kellyを実装
-- [ ] [P1] ROI / MaxDD / 月次ROIを算出
-- [ ] [P1] `data/backtest_result.json` をUI互換で出力
+- [x] [P1] `scripts_v2/backtest_wide_v2.py` を作成
+- [x] [P1] PL + Monte Carloでwide同時確率を推定
+- [x] [P1] EVフィルタとfractional Kellyを実装
+- [x] [P1] `--min-p-wide`（確率足切り）と `--min-p-wide-stage`（candidate/selected）を追加
+- [x] [P1] `scripts_v2/sweep_min_p_wide_threshold_v2.py`（OOFで閾値スイープ）を追加
+- [x] [P1] ROI / MaxDD / 月次ROIを算出
+- [x] [P1] `data/backtest_result.json` をUI互換で出力
 
 ## Phase 6: 運用強化（T-5）
 
