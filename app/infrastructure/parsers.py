@@ -698,29 +698,29 @@ HR_BRACKET_START = 132
 HR_BRACKET_BLOCK_LEN = 10
 HR_BRACKET_COUNT = 3
 
-# Quinella ( 馬連 ): 163-1 = 162. Len 12 (4+8). Count 3.
-HR_QUINELLA_START = 162
-HR_QUINELLA_BLOCK_LEN = 12
+# Quinella ( 馬連 ): 実データでは key(4)+payout(8)+pop(4) の16桁ブロック
+HR_QUINELLA_START = 245
+HR_QUINELLA_BLOCK_LEN = 16
 HR_QUINELLA_COUNT = 3
 
-# Wide ( ワイド ): 199-1 = 198. Len 12 (4+8). Count 7.
-HR_WIDE_START = 198
-HR_WIDE_BLOCK_LEN = 12
-HR_WIDE_COUNT = 7
+# Wide ( ワイド ): 実データでは16桁ブロックが最大10本
+HR_WIDE_START = 293
+HR_WIDE_BLOCK_LEN = 16
+HR_WIDE_COUNT = 10
 
-# Exacta ( 馬単 ): 283-1 = 282. Len 12 (4+8). Count 6.
-HR_EXACTA_START = 282
-HR_EXACTA_BLOCK_LEN = 12
+# Exacta ( 馬単 ): 実データでは16桁ブロック
+HR_EXACTA_START = 453
+HR_EXACTA_BLOCK_LEN = 16
 HR_EXACTA_COUNT = 6
 
-# Trio ( 3連複 ): 355-1 = 354. Len 14 (6+8). Count 3.
-HR_TRIO_START = 354
-HR_TRIO_BLOCK_LEN = 14
+# Trio ( 3連複 ): 実データでは key(6)+payout(8)+pop(4) の18桁ブロック
+HR_TRIO_START = 549
+HR_TRIO_BLOCK_LEN = 18
 HR_TRIO_COUNT = 3
 
-# Trifecta ( 3連単 ): 397-1 = 396. Len 14 (6+8). Count 6.
-HR_TRIFECTA_START = 396
-HR_TRIFECTA_BLOCK_LEN = 14
+# Trifecta ( 3連単 ): 実データでは18桁ブロック
+HR_TRIFECTA_START = 603
+HR_TRIFECTA_BLOCK_LEN = 18
 HR_TRIFECTA_COUNT = 6
 
 
@@ -844,14 +844,24 @@ class PayoutRecord:
                     pass
 
         # Helper to extract blocks
-        def extract(start, count, block_len, key_len, bet_type):
+        def extract(
+            start: int,
+            count: int,
+            block_len: int,
+            key_len: int,
+            bet_type: int,
+            *,
+            payout_len: int = 8,
+            popularity_len: int = 0,
+            payout_multiplier: int = 1,
+        ) -> None:
             for i in range(count):
                 offset = start + i * block_len
                 # key part (HorseNo or Kumiban)
                 key_part = _slice_byte_decode(b_payload, offset, key_len)
-                # yen part (always 8 bytes at end of block)
+                # payout part
                 yen_offset = offset + key_len
-                yen_val = _slice_byte_int(b_payload, yen_offset, 8)
+                yen_val = _slice_byte_int(b_payload, yen_offset, payout_len)
 
                 if not key_part or not key_part.strip():
                     continue
@@ -862,6 +872,13 @@ class PayoutRecord:
                 if int(key_part) == 0:
                     continue
 
+                popularity: int | None = None
+                if popularity_len > 0:
+                    popularity_offset = yen_offset + payout_len
+                    pop_val = _slice_byte_int(b_payload, popularity_offset, popularity_len)
+                    if pop_val and pop_val > 0:
+                        popularity = int(pop_val)
+
                 results.append(
                     cls(
                         race_id=race_id,
@@ -869,8 +886,8 @@ class PayoutRecord:
                         selection=key_part.replace(
                             " ", "0"
                         ),  # Fill spaces with 0 for standardization
-                        payout_yen=yen_val,
-                        popularity=None,  # Popularity is not in HR record (only in O1/O2)
+                        payout_yen=int(yen_val) * int(payout_multiplier),
+                        popularity=popularity,
                     )
                 )
 
@@ -881,15 +898,55 @@ class PayoutRecord:
         # 3: Bracket (枠連)
         extract(HR_BRACKET_START, HR_BRACKET_COUNT, HR_BRACKET_BLOCK_LEN, 2, 3)
         # 4: Quinella (馬連)
-        extract(HR_QUINELLA_START, HR_QUINELLA_COUNT, HR_QUINELLA_BLOCK_LEN, 4, 4)
+        extract(
+            HR_QUINELLA_START,
+            HR_QUINELLA_COUNT,
+            HR_QUINELLA_BLOCK_LEN,
+            4,
+            4,
+            popularity_len=4,
+            payout_multiplier=10,
+        )
         # 5: Wide (ワイド)
-        extract(HR_WIDE_START, HR_WIDE_COUNT, HR_WIDE_BLOCK_LEN, 4, 5)
+        extract(
+            HR_WIDE_START,
+            HR_WIDE_COUNT,
+            HR_WIDE_BLOCK_LEN,
+            4,
+            5,
+            popularity_len=4,
+            payout_multiplier=10,
+        )
         # 6: Exacta (馬単)
-        extract(HR_EXACTA_START, HR_EXACTA_COUNT, HR_EXACTA_BLOCK_LEN, 4, 6)
+        extract(
+            HR_EXACTA_START,
+            HR_EXACTA_COUNT,
+            HR_EXACTA_BLOCK_LEN,
+            4,
+            6,
+            popularity_len=4,
+            payout_multiplier=10,
+        )
         # 7: Trio (3連複)
-        extract(HR_TRIO_START, HR_TRIO_COUNT, HR_TRIO_BLOCK_LEN, 6, 7)
+        extract(
+            HR_TRIO_START,
+            HR_TRIO_COUNT,
+            HR_TRIO_BLOCK_LEN,
+            6,
+            7,
+            popularity_len=4,
+            payout_multiplier=10,
+        )
         # 8: Trifecta (3連単)
-        extract(HR_TRIFECTA_START, HR_TRIFECTA_COUNT, HR_TRIFECTA_BLOCK_LEN, 6, 8)
+        extract(
+            HR_TRIFECTA_START,
+            HR_TRIFECTA_COUNT,
+            HR_TRIFECTA_BLOCK_LEN,
+            6,
+            8,
+            popularity_len=4,
+            payout_multiplier=10,
+        )
 
         return results
 

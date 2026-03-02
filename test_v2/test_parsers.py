@@ -209,57 +209,29 @@ class TestRunnerRecordParser:
 
 class TestPayoutRecordParser:
     def test_parse_hr(self):
-        b_payload = bytearray()
+        b_payload = bytearray(b" " * 719)
 
-        def add(text: str, length: int):
+        def put(offset: int, text: str):
             b = text.encode("cp932")
-            if len(b) < length:
-                b = b + b" " * (length - len(b))
-            else:
-                b = b[:length]
-            b_payload.extend(b)
+            end = offset + len(b)
+            b_payload[offset:end] = b
 
-        add("HR120260203", 11)
-        add("2026020306010101", 16)
-        add("", 25)
+        put(0, "HR220260203")
+        put(11, "2026020306010101")
 
-        add("01", 2)
-        add("00000150", 8)
-        add("", 20)
-
-        add("01", 2)
-        add("00000110", 8)
-        add("02", 2)
-        add("00000120", 8)
-        add("", 30)
-
-        add("", 30)
-        add("0102", 4)
-        add("00000200", 8)
-        add("", 24)
-        add("0103", 4)
-        add("00000330", 8)
-        add("", 72)
-        add("", 72)
-        add("", 42)
-        add("", 84)
-
-        if len(b_payload) < 964:
-            b_payload.extend(b" " * (964 - len(b_payload)))
+        # Wide block format: kumiban(4) + payout_raw(8) + popularity(4)
+        # payout_raw is 10-yen unit in HR payload.
+        put(293, "0102000000200001")
+        put(309, "0103000000330002")
+        put(325, "0203000000570003")
 
         payload = b_payload.decode("cp932", errors="replace")
         records = PayoutRecord.parse(payload)
-        assert len(records) == 5
-
-        by_type = {}
-        for row in records:
-            by_type.setdefault(row.bet_type, []).append(row)
-
-        assert by_type[1][0].selection == "01"
-        assert by_type[1][0].payout_yen == 150
-        assert len(by_type[2]) == 2
-        assert by_type[4][0].selection == "0102"
-        assert by_type[5][0].selection == "0103"
+        wide_rows = [row for row in records if row.bet_type == 5]
+        assert len(wide_rows) == 3
+        assert [row.selection for row in wide_rows] == ["0102", "0103", "0203"]
+        assert [row.payout_yen for row in wide_rows] == [200, 330, 570]
+        assert [row.popularity for row in wide_rows] == [1, 2, 3]
 
 
 class TestOddsTimeSeriesRecordParser:
