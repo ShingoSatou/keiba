@@ -47,11 +47,11 @@ def _build_meta_header(
 
 
 def _convert_one_pdf(pdf_path: Path) -> Path:
-    from docling.document_converter import DocumentConverter, PdfFormatOption
     from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
     from docling.datamodel.base_models import ConversionStatus, InputFormat
     from docling.datamodel.document import DoclingVersion
     from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.document_converter import DocumentConverter, PdfFormatOption
     from docling_core.types.doc import ImageRefMode
 
     pdf_path = pdf_path.resolve()
@@ -82,7 +82,8 @@ def _convert_one_pdf(pdf_path: Path) -> Path:
     conv_res = converter.convert(pdf_path, raises_on_error=False)
     if conv_res.status not in {ConversionStatus.SUCCESS, ConversionStatus.PARTIAL_SUCCESS}:
         errs = "; ".join(e.error_message for e in (conv_res.errors or []))
-        raise RuntimeError(f"Docling conversion failed: {pdf_path} ({conv_res.status}). {errs}".strip())
+        msg = f"Docling conversion failed: {pdf_path} ({conv_res.status}). {errs}".strip()
+        raise RuntimeError(msg)
 
     if conv_res.status == ConversionStatus.PARTIAL_SUCCESS and conv_res.errors:
         print(
@@ -109,8 +110,10 @@ def _convert_one_pdf(pdf_path: Path) -> Path:
 
     versions = DoclingVersion()
     converted_at = dt.datetime.now().astimezone()
+    cwd = Path.cwd()
+    source = pdf_path.relative_to(cwd) if pdf_path.is_relative_to(cwd) else pdf_path
     meta_header = _build_meta_header(
-        source=pdf_path.relative_to(Path.cwd()) if pdf_path.is_relative_to(Path.cwd()) else pdf_path,
+        source=source,
         sha256=_sha256_file(pdf_path),
         converted_at=converted_at,
         docling_version=str(versions.docling_version),
@@ -131,7 +134,9 @@ def _convert_one_pdf(pdf_path: Path) -> Path:
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="Convert one or more PDFs to Markdown using Docling.")
+    parser = argparse.ArgumentParser(
+        description="Convert one or more PDFs to Markdown using Docling."
+    )
     parser.add_argument("pdf", nargs="+", type=Path, help="Input PDF path(s).")
     args = parser.parse_args(argv)
 
@@ -152,4 +157,3 @@ def main(argv: list[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
-
