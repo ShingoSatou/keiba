@@ -29,6 +29,13 @@ uv run python scripts_v2/load_to_db.py --input-dir data/
 - TODO（進捗管理）: `docs/ops_v2/TODO.md`
 - スクリプトリファレンス: `docs/ops_v2/スクリプトリファレンス.md`
 
+## v3（追加）
+
+- 仕様: `docs/specs_v3/v3_実装仕様.md`
+- 運用手順: `docs/ops_v3/スクリプトリファレンス.md`
+- 推定前提: `docs/ops_v3/Assumptions.md`
+- 実行結果: `docs/ops_v3/v3_run_report_2026-03-04.md`
+
 ## v1について（参照専用）
 
 v1（旧）は参照用として残しています（保守・編集しない）。
