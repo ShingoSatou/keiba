@@ -9,4 +9,5 @@
 5. PL学習で使う後段入力は OOF 予測のみとし、OOFが欠ける行は PL 学習対象から除外する。
 6. PLは `u`（馬ID固定効果）を持たず、線形スコア `w^T x` のみを学習する。
 7. PLの `p_top3` / `p_wide` は Monte Carlo 推定を採用し、乱数シードは race_id とグローバルseedから決定する。
-8. ROI算出は v2の `scripts_v2/backtest_wide_v2.py` を利用し、`p_top3` から `p_wide` を推定している（`pl_score` を直接は使っていない）。
+8. ROI算出のデフォルトは v3の `scripts_v3/backtest_wide_v3.py` を利用し、`pl_score -> MC -> p_wide`（または `train_pl_v3.py --emit-wide-oof` が出力した `p_wide`）で評価する。
+9. 旧方式の v2近似（`scripts_v2/backtest_wide_v2.py`: `p_top3 -> p/(1-p) -> p_wide`）は比較用の参考経路として扱い、v3の標準評価経路にはしない。

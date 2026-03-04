@@ -97,17 +97,42 @@ CV設定:
 
 出力:
 - `data/oof/pl_v3_oof_w2.parquet`
+- `data/oof/pl_v3_wide_oof_w2.parquet`
 - `data/oof/pl_v3_cv_metrics_w2.json`
 - `models/pl_v3_recent_window_w2.joblib`
 
-## 7. ワイドROI（v2 backtest器で算出）
+## 7. ワイドROI
 
-ROI算出は v2の `scripts_v2/backtest_wide_v2.py` を利用。
-- `p_top3` を入力として `p_wide` を推定（v2のPLサンプリング近似）
+### 7.1 推奨: v3 backtest（`pl_score -> MC -> p_wide` / `p_wide` 直接入力）
+
+ROI算出は v3の `scripts_v3/backtest_wide_v3.py` を利用。
 - ワイドのオッズ: `core.o3_wide`
 - ワイドの払戻: `core.payout (bet_type=5)`
 
-### 7.1 OOF（2023–2024, `pl_v3_oof_w2.parquet`）
+OOF（2023–2024, pair-level `data/oof/pl_v3_wide_oof_w2.parquet`）:
+- ROI `0.0948`（bets=1513）
+- `data/backtest_v3/backtest_wide_v3_direct_w2_2023_2024.json`
+
+holdout（2025, horse-level `data/oof/pl_v3_holdout_2025_pred.parquet`）:
+- ROI `0.0617`（bets=1427）
+- `data/backtest_v3/backtest_wide_v3_direct_holdout_2025.json`
+
+同一期間内での `min_p_wide` スイープ（参考, holdout内最適化のため過学習リスクあり）:
+- 対象年は 2025 のみ（`selected_years=[2025]`, `--years 2025`, `--holdout-year 2026`）
+- `candidate min_p_wide=0.11`: ROI `0.3624`（bets=77）
+- `candidate min_p_wide=0.12`: ROI `0.4064`（bets=59）
+- `candidate min_p_wide=0.14`: ROI `0.4516`（bets=34）
+- `candidate min_p_wide=0.15`: ROI `0.5952`（bets=27）
+- `selected min_p_wide=0.11`: ROI `0.8206`（bets=11）
+- `selected min_p_wide=0.12`: ROI `1.1355`（bets=8）
+- `selected min_p_wide=0.14`: ROI `1.2287`（bets=7）
+- `selected min_p_wide=0.15`: ROI `1.6151`（bets=5）
+
+### 7.2 参考: 旧v2近似（`p_top3 -> p/(1-p) -> p_wide`）
+
+ROI算出は v2の `scripts_v2/backtest_wide_v2.py` を利用。
+
+OOF（2023–2024, `pl_v3_oof_w2.parquet`）:
 
 閾値なし:
 - ROI `0.0810`（bets=1406）
@@ -121,7 +146,7 @@ ROI算出は v2の `scripts_v2/backtest_wide_v2.py` を利用。
 - `candidate min_p_wide=0.12`: ROI `0.8880`（bets=263）
 - `selected min_p_wide=0.15`: ROI `0.8581`（bets=24）
 
-### 7.2 2025評価（holdout）
+2025評価（holdout）:
 
 2025の `p_top3` は以下を作成して入力:
 - `data/oof/pl_v3_holdout_2025_pred.parquet`（4,971行 / 344レース）
@@ -151,10 +176,46 @@ uv run python scripts_v3/train_odds_calibrator_v3.py
 # 4) PL（OOF=2023-2024）
 uv run python scripts_v3/train_pl_v3.py --train-window-years 2 \
   --oof-output data/oof/pl_v3_oof_w2.parquet \
+  --wide-oof-output data/oof/pl_v3_wide_oof_w2.parquet \
+  --emit-wide-oof \
   --metrics-output data/oof/pl_v3_cv_metrics_w2.json \
   --model-output models/pl_v3_recent_window_w2.joblib
 
-# 5) ワイドROI（OOF 2023-2024）
+# 5) ワイドROI（推奨: v3 backtest, OOF 2023-2024）
+uv run python scripts_v3/backtest_wide_v3.py \
+  --input data/oof/pl_v3_wide_oof_w2.parquet \
+  --years 2023,2024 \
+  --holdout-year 2025 \
+  --output data/backtest_v3/backtest_wide_v3_direct_w2_2023_2024.json \
+  --meta-output data/backtest_v3/backtest_wide_v3_direct_w2_2023_2024_meta.json \
+  --force
+
+# 5b) ワイドROI（推奨: v3 backtest, holdout 2025 baseline）
+uv run python scripts_v3/backtest_wide_v3.py \
+  --input data/oof/pl_v3_holdout_2025_pred.parquet \
+  --years 2025 \
+  --holdout-year 2026 \
+  --output data/backtest_v3/backtest_wide_v3_direct_holdout_2025.json \
+  --meta-output data/backtest_v3/backtest_wide_v3_direct_holdout_2025_meta.json \
+  --force
+
+# 5c) ワイドROI（推奨: v3 backtest, holdout 2025 min_p_wide sweep）
+for stage in candidate selected; do
+  for thr in 0.11 0.12 0.14 0.15; do
+    tag=$(echo "$thr" | tr -d '.')
+    uv run python scripts_v3/backtest_wide_v3.py \
+      --input data/oof/pl_v3_holdout_2025_pred.parquet \
+      --years 2025 \
+      --holdout-year 2026 \
+      --min-p-wide "$thr" \
+      --min-p-wide-stage "$stage" \
+      --output "data/backtest_v3/backtest_wide_v3_direct_holdout_2025_minp${tag}_${stage}.json" \
+      --meta-output "data/backtest_v3/backtest_wide_v3_direct_holdout_2025_minp${tag}_${stage}_meta.json" \
+      --force
+  done
+done
+
+# 6) ワイドROI（参考: 旧v2近似）
 uv run python scripts_v2/backtest_wide_v2.py \
   --input data/oof/pl_v3_oof_w2.parquet \
   --years 2023,2024 \
