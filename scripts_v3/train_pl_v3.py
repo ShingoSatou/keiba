@@ -463,68 +463,15 @@ def _artifact_from_fit(
     }
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-    logging.basicConfig(level=getattr(logging, str(args.log_level).upper(), logging.INFO))
-    _validate_args(args)
-
-    features_path = resolve_path(args.features_input)
-    oof_output = resolve_path(args.oof_output)
-    wide_oof_output = resolve_path(args.wide_oof_output)
-    metrics_output = resolve_path(args.metrics_output)
-    model_output = resolve_path(args.model_output)
-    all_years_model_output = resolve_path(args.all_years_model_output)
-    meta_output = resolve_path(args.meta_output)
-
-    base = _prep_base_frame(features_path)
-    merged, required_pred_cols = _merge_prediction_features(args, base)
-    if not required_pred_cols:
-        raise SystemExit("No required OOF prediction columns found for PL.")
-
-    missing_req = [col for col in required_pred_cols if col not in merged.columns]
-    if missing_req:
-        raise SystemExit(f"Missing required OOF columns after merge: {missing_req}")
-
-    pl_feature_cols = _collect_pl_feature_columns(
-        merged,
-        required_pred_cols=required_pred_cols,
-        include_final_odds=bool(args.include_final_odds_features),
-    )
-    if not pl_feature_cols:
-        raise SystemExit("No PL feature columns available.")
-
-    # OOF予測が揃わない行は後段PL学習対象から除外（OOF stacking原則）
-    eligible = merged.copy()
-    for col in required_pred_cols:
-        eligible[col] = pd.to_numeric(eligible[col], errors="coerce")
-    eligible = eligible[eligible[required_pred_cols].notna().all(axis=1)].copy()
-    eligible = eligible[eligible["year"] < int(args.holdout_year)].copy()
-    if eligible.empty:
-        raise SystemExit("No eligible rows for PL training after OOF/holdout filtering.")
-
-    years = sorted(eligible["year"].unique().tolist())
-    try:
-        folds = build_rolling_year_folds(
-            years,
-            train_window_years=int(args.train_window_years),
-            holdout_year=int(args.holdout_year),
-        )
-    except ValueError as exc:
-        max_window = max(1, len(years) - 1)
-        raise SystemExit(
-            f"{exc} (PL uses OOF-only rows. available_years={years}, "
-            f"try --train-window-years <= {max_window})"
-        ) from exc
-    logger.info(
-        "pl-v3 train years=%s folds=%s window=%s holdout_year>=%s rows=%s races=%s",
-        years,
-        len(folds),
-        args.train_window_years,
-        args.holdout_year,
-        len(eligible),
-        eligible["race_id"].nunique(),
-    )
-
+def _run_pl_cv_loop(
+    *,
+    eligible: pd.DataFrame,
+    folds: list,
+    pl_feature_cols: list[str],
+    required_pred_cols: list[str],
+    args: argparse.Namespace,
+) -> tuple[pd.DataFrame, list[pd.DataFrame], list[dict[str, Any]]]:
+    """PL の CV loop を実行し、OOF / wide_oof / fold metrics を返す。"""
     oof_list: list[pd.DataFrame] = []
     wide_oof_list: list[pd.DataFrame] = []
     fold_metrics: list[dict[str, Any]] = []
@@ -670,30 +617,17 @@ def main(argv: list[str] | None = None) -> int:
     oof = pd.concat(oof_list, axis=0, ignore_index=True).sort_values(
         ["race_id", "horse_no"], kind="mergesort"
     )
-    oof_output.parent.mkdir(parents=True, exist_ok=True)
-    oof.to_parquet(oof_output, index=False)
+    return oof, wide_oof_list, fold_metrics
 
-    if bool(args.emit_wide_oof):
-        wide_oof_output.parent.mkdir(parents=True, exist_ok=True)
-        wide_oof = (
-            pd.concat(wide_oof_list, axis=0, ignore_index=True)
-            if wide_oof_list
-            else pd.DataFrame(
-                columns=[
-                    "race_id",
-                    "horse_no_1",
-                    "horse_no_2",
-                    "kumiban",
-                    "p_wide",
-                    "p_top3_1",
-                    "p_top3_2",
-                    "fold_id",
-                    "valid_year",
-                ]
-            )
-        )
-        wide_oof.to_parquet(wide_oof_output, index=False)
 
+def _train_pl_final_models(
+    *,
+    eligible: pd.DataFrame,
+    years: list[int],
+    pl_feature_cols: list[str],
+    args: argparse.Namespace,
+) -> tuple[dict[str, Any], dict[str, Any], pd.DataFrame, pd.DataFrame]:
+    """recent window と all-years の PL 最終モデルを学習する。"""
     recent_span = int(args.train_window_years) + 1
     recent_years = years[-recent_span:] if len(years) > recent_span else years
     recent_df = eligible[eligible["year"].isin(recent_years)].copy()
@@ -731,11 +665,20 @@ def main(argv: list[str] | None = None) -> int:
         train_races=int(all_df["race_id"].nunique()),
     )
 
-    model_output.parent.mkdir(parents=True, exist_ok=True)
-    all_years_model_output.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(artifact_recent, model_output)
-    joblib.dump(artifact_all, all_years_model_output)
+    return artifact_recent, artifact_all, recent_df, all_df
 
+
+def _build_pl_metrics_payload(
+    *,
+    fold_metrics: list[dict[str, Any]],
+    eligible: pd.DataFrame,
+    oof: pd.DataFrame,
+    years: list[int],
+    required_pred_cols: list[str],
+    pl_feature_cols: list[str],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """PL メトリクスの集計辞書を組み立てる。"""
     summary = {
         "pl_nll_valid": _summary([f.get("pl_nll_valid") for f in fold_metrics]),
         "top3_logloss": _summary([f.get("top3_logloss") for f in fold_metrics]),
@@ -743,7 +686,7 @@ def main(argv: list[str] | None = None) -> int:
         "top3_auc": _summary([f.get("top3_auc") for f in fold_metrics]),
         "top3_ece": _summary([f.get("top3_ece") for f in fold_metrics]),
     }
-    metrics_payload = {
+    return {
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "config": {
             "holdout_year": int(args.holdout_year),
@@ -767,9 +710,27 @@ def main(argv: list[str] | None = None) -> int:
         "folds": fold_metrics,
         "summary": summary,
     }
-    save_json(metrics_output, metrics_payload)
 
-    meta_payload = {
+
+def _build_pl_meta_payload(
+    *,
+    args: argparse.Namespace,
+    features_path: Path,
+    oof_output: Path,
+    wide_oof_output: Path,
+    metrics_output: Path,
+    model_output: Path,
+    all_years_model_output: Path,
+    required_pred_cols: list[str],
+    pl_feature_cols: list[str],
+    cv_summary: dict[str, Any],
+    recent_df: pd.DataFrame,
+    all_df: pd.DataFrame,
+    years: list[int],
+) -> dict[str, Any]:
+    """PL バンドルメタ辞書を組み立てる。"""
+    recent_years = sorted(recent_df["year"].unique().tolist())
+    return {
         "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "holdout_rule": f"exclude year >= {args.holdout_year}",
         "input_paths": {
@@ -791,7 +752,7 @@ def main(argv: list[str] | None = None) -> int:
         },
         "required_pred_cols": required_pred_cols,
         "feature_columns": pl_feature_cols,
-        "cv_summary": summary,
+        "cv_summary": cv_summary,
         "final_train_summary": {
             "main_model_years": recent_years,
             "main_model_rows": int(len(recent_df)),
@@ -800,6 +761,144 @@ def main(argv: list[str] | None = None) -> int:
         },
         "code_hash": hash_files([Path(__file__), Path(resolve_path("scripts_v3/pl_v3_common.py"))]),
     }
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    logging.basicConfig(level=getattr(logging, str(args.log_level).upper(), logging.INFO))
+    _validate_args(args)
+
+    features_path = resolve_path(args.features_input)
+    oof_output = resolve_path(args.oof_output)
+    wide_oof_output = resolve_path(args.wide_oof_output)
+    metrics_output = resolve_path(args.metrics_output)
+    model_output = resolve_path(args.model_output)
+    all_years_model_output = resolve_path(args.all_years_model_output)
+    meta_output = resolve_path(args.meta_output)
+
+    base = _prep_base_frame(features_path)
+    merged, required_pred_cols = _merge_prediction_features(args, base)
+    if not required_pred_cols:
+        raise SystemExit("No required OOF prediction columns found for PL.")
+
+    missing_req = [col for col in required_pred_cols if col not in merged.columns]
+    if missing_req:
+        raise SystemExit(f"Missing required OOF columns after merge: {missing_req}")
+
+    pl_feature_cols = _collect_pl_feature_columns(
+        merged,
+        required_pred_cols=required_pred_cols,
+        include_final_odds=bool(args.include_final_odds_features),
+    )
+    if not pl_feature_cols:
+        raise SystemExit("No PL feature columns available.")
+
+    # OOF予測が揃わない行は後段PL学習対象から除外（OOF stacking原則）
+    eligible = merged.copy()
+    for col in required_pred_cols:
+        eligible[col] = pd.to_numeric(eligible[col], errors="coerce")
+    eligible = eligible[eligible[required_pred_cols].notna().all(axis=1)].copy()
+    eligible = eligible[eligible["year"] < int(args.holdout_year)].copy()
+    if eligible.empty:
+        raise SystemExit("No eligible rows for PL training after OOF/holdout filtering.")
+
+    years = sorted(eligible["year"].unique().tolist())
+    try:
+        folds = build_rolling_year_folds(
+            years,
+            train_window_years=int(args.train_window_years),
+            holdout_year=int(args.holdout_year),
+        )
+    except ValueError as exc:
+        max_window = max(1, len(years) - 1)
+        raise SystemExit(
+            f"{exc} (PL uses OOF-only rows. available_years={years}, "
+            f"try --train-window-years <= {max_window})"
+        ) from exc
+    logger.info(
+        "pl-v3 train years=%s folds=%s window=%s holdout_year>=%s rows=%s races=%s",
+        years,
+        len(folds),
+        args.train_window_years,
+        args.holdout_year,
+        len(eligible),
+        eligible["race_id"].nunique(),
+    )
+
+    # --- CV loop ---
+    oof, wide_oof_list, fold_metrics = _run_pl_cv_loop(
+        eligible=eligible,
+        folds=folds,
+        pl_feature_cols=pl_feature_cols,
+        required_pred_cols=required_pred_cols,
+        args=args,
+    )
+
+    # --- OOF 保存 ---
+    oof_output.parent.mkdir(parents=True, exist_ok=True)
+    oof.to_parquet(oof_output, index=False)
+
+    if bool(args.emit_wide_oof):
+        wide_oof_output.parent.mkdir(parents=True, exist_ok=True)
+        wide_oof = (
+            pd.concat(wide_oof_list, axis=0, ignore_index=True)
+            if wide_oof_list
+            else pd.DataFrame(
+                columns=[
+                    "race_id",
+                    "horse_no_1",
+                    "horse_no_2",
+                    "kumiban",
+                    "p_wide",
+                    "p_top3_1",
+                    "p_top3_2",
+                    "fold_id",
+                    "valid_year",
+                ]
+            )
+        )
+        wide_oof.to_parquet(wide_oof_output, index=False)
+
+    # --- 最終モデル学習 ---
+    artifact_recent, artifact_all, recent_df, all_df = _train_pl_final_models(
+        eligible=eligible,
+        years=years,
+        pl_feature_cols=pl_feature_cols,
+        args=args,
+    )
+
+    model_output.parent.mkdir(parents=True, exist_ok=True)
+    all_years_model_output.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(artifact_recent, model_output)
+    joblib.dump(artifact_all, all_years_model_output)
+
+    # --- メトリクス / メタ保存 ---
+    metrics_payload = _build_pl_metrics_payload(
+        fold_metrics=fold_metrics,
+        eligible=eligible,
+        oof=oof,
+        years=years,
+        required_pred_cols=required_pred_cols,
+        pl_feature_cols=pl_feature_cols,
+        args=args,
+    )
+    save_json(metrics_output, metrics_payload)
+
+    meta_payload = _build_pl_meta_payload(
+        args=args,
+        features_path=features_path,
+        oof_output=oof_output,
+        wide_oof_output=wide_oof_output,
+        metrics_output=metrics_output,
+        model_output=model_output,
+        all_years_model_output=all_years_model_output,
+        required_pred_cols=required_pred_cols,
+        pl_feature_cols=pl_feature_cols,
+        cv_summary=metrics_payload["summary"],
+        recent_df=recent_df,
+        all_df=all_df,
+        years=years,
+    )
     save_json(meta_output, meta_payload)
 
     logger.info("wrote %s", oof_output)

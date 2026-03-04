@@ -531,58 +531,20 @@ def _add_benter_for_fold(
     return benter_payload, extra_cols
 
 
-def main(
-    argv: list[str] | None = None,
+def _run_cv_loop(
     *,
-    default_task: str | None = None,
-    default_model: str | None = None,
-) -> int:
-    args = parse_args(argv, default_task=default_task, default_model=default_model)
-    logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO))
-    _validate_args(args)
-
-    label_col = _label_col(str(args.task))
-    pred_col = _pred_col(str(args.task), str(args.model))
-
-    input_path = resolve_path(args.input)
-    outputs = _resolve_output_paths(args)
-    holdout_input_path = resolve_path(args.holdout_input) if args.holdout_input else None
-
-    if not input_path.exists():
-        raise SystemExit(f"input not found: {input_path}")
-
-    frame = prepare_binary_frame(pd.read_parquet(input_path), label_col=label_col)
-    frame = frame[frame["year"] < int(args.holdout_year)].copy()
-    if frame.empty:
-        raise SystemExit("No trainable rows after holdout exclusion")
-
-    years = sorted(frame["year"].unique().tolist())
-    folds = build_rolling_year_folds(
-        years,
-        train_window_years=int(args.train_window_years),
-        holdout_year=int(args.holdout_year),
-    )
-
-    drop_cols = {label_col}
-    feat_cols = feature_columns(frame, extra_drop=drop_cols)
-    feat_cols = _drop_entity_features(feat_cols, bool(args.drop_entity_id_features))
-    if not feat_cols:
-        raise SystemExit("No feature columns available")
-    categorical_cols = [c for c in ["jockey_key", "trainer_key"] if c in feat_cols]
-
+    frame: pd.DataFrame,
+    folds: list,
+    feat_cols: list[str],
+    categorical_cols: list[str],
+    label_col: str,
+    pred_col: str,
+    args: argparse.Namespace,
+) -> tuple[pd.DataFrame, list[dict[str, Any]], list[int]]:
+    """CV loop を実行し、OOF / fold metrics / best_iterations を返す。"""
     oof_list: list[pd.DataFrame] = []
     fold_metrics: list[dict[str, Any]] = []
     best_iterations: list[int] = []
-
-    logger.info(
-        "%s-%s train years=%s folds=%s window=%s holdout_year>=%s",
-        args.task,
-        args.model,
-        years,
-        len(folds),
-        args.train_window_years,
-        args.holdout_year,
-    )
 
     for fold in folds:
         train_df = frame[frame["year"].isin(fold.train_years)].copy()
@@ -678,10 +640,20 @@ def main(
 
     oof = pd.concat(oof_list, axis=0, ignore_index=True)
     oof = oof.sort_values(["race_id", "horse_no"], kind="mergesort")
+    return oof, fold_metrics, best_iterations
 
-    final_iterations = int(np.median(best_iterations))
-    final_iterations = max(1, min(final_iterations, int(args.num_boost_round)))
 
+def _train_final_models(
+    *,
+    frame: pd.DataFrame,
+    years: list[int],
+    feat_cols: list[str],
+    categorical_cols: list[str],
+    label_col: str,
+    args: argparse.Namespace,
+    final_iterations: int,
+) -> tuple[Any, Any, pd.DataFrame, pd.DataFrame]:
+    """recent window と all-years の最終モデルを学習する。"""
     recent_span = int(args.train_window_years) + 1
     recent_years = years[-recent_span:] if len(years) > recent_span else years
     recent_df = frame[frame["year"].isin(recent_years)].copy()
@@ -710,58 +682,83 @@ def main(
         n_estimators=int(final_iterations),
         categorical_cols=categorical_cols,
     )
+    return main_model, all_model, recent_df, all_df
 
-    outputs["oof"].parent.mkdir(parents=True, exist_ok=True)
-    oof.to_parquet(outputs["oof"], index=False)
-    _save_model(str(args.model), main_model, outputs["model"])
-    _save_model(str(args.model), all_model, outputs["all_years_model"])
 
-    holdout_rows = 0
-    holdout_races = 0
-    if holdout_input_path is not None and holdout_input_path.exists():
-        holdout_raw = pd.read_parquet(holdout_input_path)
-        if label_col not in holdout_raw.columns:
-            holdout_raw[label_col] = 0
-        holdout_df = prepare_binary_frame(holdout_raw, label_col=label_col)
-        holdout_df = holdout_df[holdout_df["year"] >= int(args.holdout_year)].copy()
-        if not holdout_df.empty:
-            x_hold = coerce_feature_matrix(holdout_df, feat_cols)
-            p_hold = _predict_proba(
-                str(args.model),
-                main_model,
-                x_hold,
-                best_iteration=(
-                    int(final_iterations) if str(args.model) == "xgb" else int(final_iterations)
-                ),
-            )
-            holdout_pred = holdout_df[
-                [
-                    c
-                    for c in [
-                        "race_id",
-                        "horse_id",
-                        "horse_no",
-                        "race_date",
-                        "field_size",
-                        label_col,
-                    ]
-                    if c in holdout_df.columns
-                ]
-            ].copy()
-            holdout_pred[pred_col] = p_hold
-            holdout_pred = holdout_pred.sort_values(["race_id", "horse_no"], kind="mergesort")
-            outputs["holdout"].parent.mkdir(parents=True, exist_ok=True)
-            holdout_pred.to_parquet(outputs["holdout"], index=False)
-            holdout_rows = int(len(holdout_pred))
-            holdout_races = int(holdout_pred["race_id"].nunique())
-            logger.info("wrote %s", outputs["holdout"])
+def _run_holdout_prediction(
+    *,
+    holdout_input_path: Path | None,
+    main_model: Any,
+    feat_cols: list[str],
+    label_col: str,
+    pred_col: str,
+    args: argparse.Namespace,
+    final_iterations: int,
+    output_path: Path,
+) -> tuple[int, int]:
+    """holdout 入力があれば推論を実行し、行数・レース数を返す。"""
+    if holdout_input_path is None or not holdout_input_path.exists():
+        return 0, 0
 
+    holdout_raw = pd.read_parquet(holdout_input_path)
+    if label_col not in holdout_raw.columns:
+        holdout_raw[label_col] = 0
+    holdout_df = prepare_binary_frame(holdout_raw, label_col=label_col)
+    holdout_df = holdout_df[holdout_df["year"] >= int(args.holdout_year)].copy()
+    if holdout_df.empty:
+        return 0, 0
+
+    x_hold = coerce_feature_matrix(holdout_df, feat_cols)
+    p_hold = _predict_proba(
+        str(args.model),
+        main_model,
+        x_hold,
+        best_iteration=(
+            int(final_iterations) if str(args.model) == "xgb" else int(final_iterations)
+        ),
+    )
+    holdout_pred = holdout_df[
+        [
+            c
+            for c in [
+                "race_id",
+                "horse_id",
+                "horse_no",
+                "race_date",
+                "field_size",
+                label_col,
+            ]
+            if c in holdout_df.columns
+        ]
+    ].copy()
+    holdout_pred[pred_col] = p_hold
+    holdout_pred = holdout_pred.sort_values(["race_id", "horse_no"], kind="mergesort")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    holdout_pred.to_parquet(output_path, index=False)
+    logger.info("wrote %s", output_path)
+    return int(len(holdout_pred)), int(holdout_pred["race_id"].nunique())
+
+
+def _build_metrics_payload(
+    *,
+    fold_metrics: list[dict[str, Any]],
+    frame: pd.DataFrame,
+    oof: pd.DataFrame,
+    holdout_rows: int,
+    holdout_races: int,
+    years: list[int],
+    final_iterations: int,
+    args: argparse.Namespace,
+    label_col: str,
+    pred_col: str,
+) -> dict[str, Any]:
+    """CV メトリクスの集計辞書を組み立てる。"""
     logloss_stats = _summary_stats([m.get("logloss") for m in fold_metrics])
     brier_stats = _summary_stats([m.get("brier") for m in fold_metrics])
     auc_stats = _summary_stats([m.get("auc") for m in fold_metrics])
     ece_stats = _summary_stats([m.get("ece") for m in fold_metrics])
 
-    metrics_payload: dict[str, Any] = {
+    payload: dict[str, Any] = {
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "task": str(args.task),
         "model": str(args.model),
@@ -804,11 +801,28 @@ def main(
                 if isinstance(f.get("benter"), dict)
             ]
         )
-        metrics_payload["summary"]["benter_r2_valid"] = benter_r2_stats
+        payload["summary"]["benter_r2_valid"] = benter_r2_stats
 
-    save_json(outputs["metrics"], metrics_payload)
+    return payload
 
-    meta_payload: dict[str, Any] = {
+
+def _build_meta_payload(
+    *,
+    args: argparse.Namespace,
+    label_col: str,
+    pred_col: str,
+    input_path: Path,
+    feat_cols: list[str],
+    categorical_cols: list[str],
+    outputs: dict[str, Path],
+    metrics_summary: dict[str, Any],
+    recent_df: pd.DataFrame,
+    all_df: pd.DataFrame,
+    years: list[int],
+) -> dict[str, Any]:
+    """モデルバンドルメタ辞書を組み立てる。"""
+    recent_years = sorted(recent_df["year"].unique().tolist())
+    return {
         "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "task": str(args.task),
         "model": str(args.model),
@@ -825,7 +839,7 @@ def main(
             "all_years_model": str(outputs["all_years_model"]),
             "holdout": str(outputs["holdout"]),
         },
-        "cv_summary": metrics_payload["summary"],
+        "cv_summary": metrics_summary,
         "final_train_summary": {
             "main_model_years": recent_years,
             "main_model_rows": int(len(recent_df)),
@@ -834,6 +848,128 @@ def main(
         },
         "code_hash": hash_files([Path(__file__)]),
     }
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    default_task: str | None = None,
+    default_model: str | None = None,
+) -> int:
+    args = parse_args(argv, default_task=default_task, default_model=default_model)
+    logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO))
+    _validate_args(args)
+
+    label_col = _label_col(str(args.task))
+    pred_col = _pred_col(str(args.task), str(args.model))
+
+    input_path = resolve_path(args.input)
+    outputs = _resolve_output_paths(args)
+    holdout_input_path = resolve_path(args.holdout_input) if args.holdout_input else None
+
+    if not input_path.exists():
+        raise SystemExit(f"input not found: {input_path}")
+
+    frame = prepare_binary_frame(pd.read_parquet(input_path), label_col=label_col)
+    frame = frame[frame["year"] < int(args.holdout_year)].copy()
+    if frame.empty:
+        raise SystemExit("No trainable rows after holdout exclusion")
+
+    years = sorted(frame["year"].unique().tolist())
+    folds = build_rolling_year_folds(
+        years,
+        train_window_years=int(args.train_window_years),
+        holdout_year=int(args.holdout_year),
+    )
+
+    drop_cols = {label_col}
+    feat_cols = feature_columns(frame, extra_drop=drop_cols)
+    feat_cols = _drop_entity_features(feat_cols, bool(args.drop_entity_id_features))
+    if not feat_cols:
+        raise SystemExit("No feature columns available")
+    categorical_cols = [c for c in ["jockey_key", "trainer_key"] if c in feat_cols]
+
+    logger.info(
+        "%s-%s train years=%s folds=%s window=%s holdout_year>=%s",
+        args.task,
+        args.model,
+        years,
+        len(folds),
+        args.train_window_years,
+        args.holdout_year,
+    )
+
+    # --- CV loop ---
+    oof, fold_metrics, best_iterations = _run_cv_loop(
+        frame=frame,
+        folds=folds,
+        feat_cols=feat_cols,
+        categorical_cols=categorical_cols,
+        label_col=label_col,
+        pred_col=pred_col,
+        args=args,
+    )
+
+    # --- 最終モデル学習 ---
+    final_iterations = int(np.median(best_iterations))
+    final_iterations = max(1, min(final_iterations, int(args.num_boost_round)))
+
+    main_model, all_model, recent_df, all_df = _train_final_models(
+        frame=frame,
+        years=years,
+        feat_cols=feat_cols,
+        categorical_cols=categorical_cols,
+        label_col=label_col,
+        args=args,
+        final_iterations=final_iterations,
+    )
+
+    # --- OOF / モデル保存 ---
+    outputs["oof"].parent.mkdir(parents=True, exist_ok=True)
+    oof.to_parquet(outputs["oof"], index=False)
+    _save_model(str(args.model), main_model, outputs["model"])
+    _save_model(str(args.model), all_model, outputs["all_years_model"])
+
+    # --- holdout 推論 ---
+    holdout_rows, holdout_races = _run_holdout_prediction(
+        holdout_input_path=holdout_input_path,
+        main_model=main_model,
+        feat_cols=feat_cols,
+        label_col=label_col,
+        pred_col=pred_col,
+        args=args,
+        final_iterations=final_iterations,
+        output_path=outputs["holdout"],
+    )
+
+    # --- メトリクス / メタ保存 ---
+    metrics_payload = _build_metrics_payload(
+        fold_metrics=fold_metrics,
+        frame=frame,
+        oof=oof,
+        holdout_rows=holdout_rows,
+        holdout_races=holdout_races,
+        years=years,
+        final_iterations=final_iterations,
+        args=args,
+        label_col=label_col,
+        pred_col=pred_col,
+    )
+    save_json(outputs["metrics"], metrics_payload)
+
+    meta_payload = _build_meta_payload(
+        args=args,
+        label_col=label_col,
+        pred_col=pred_col,
+        input_path=input_path,
+        feat_cols=feat_cols,
+        categorical_cols=categorical_cols,
+        outputs=outputs,
+        metrics_summary=metrics_payload["summary"],
+        recent_df=recent_df,
+        all_df=all_df,
+        years=years,
+    )
     save_json(outputs["meta"], meta_payload)
 
     logger.info("wrote %s", outputs["oof"])

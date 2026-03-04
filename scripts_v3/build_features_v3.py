@@ -14,13 +14,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.infrastructure.database import Database
-from scripts_v2.build_features_v2 import assert_sorted
 from scripts_v3.odds_v3_common import (
     assert_t10_no_future_reference,
     load_o1_odds_long,
     merge_odds_features,
 )
-from scripts_v3.train_binary_v3_common import hash_files, resolve_path, save_json
+from scripts_v3.v3_common import assert_sorted, hash_files, resolve_path, save_json
 
 logger = logging.getLogger(__name__)
 
