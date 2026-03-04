@@ -30,9 +30,7 @@ def test_build_rolling_year_folds_basic() -> None:
 def test_fold_integrity_detects_leakage() -> None:
     train_df = pd.DataFrame({"year": [2021, 2022], "race_id": [1, 2]})
     valid_df = pd.DataFrame({"year": [2023, 2021], "race_id": [3, 4]})
-    with pytest.raises(
-        ValueError, match="Temporal leakage detected"
-    ):
+    with pytest.raises(ValueError, match="Temporal leakage detected"):
         # max train_year(2022) >= valid_year(2022) -> error expected
         assert_fold_integrity(train_df, valid_df, 2022)
 
