@@ -118,6 +118,7 @@ holdout（2025, horse-level `data/oof/pl_v3_holdout_2025_pred.parquet`）:
 - `data/backtest_v3/backtest_wide_v3_direct_holdout_2025.json`
 
 同一期間内での `min_p_wide` スイープ（参考, holdout内最適化のため過学習リスクあり）:
+- 対象年は 2025 のみ（`selected_years=[2025]`, `--years 2025`, `--holdout-year 2026`）
 - `candidate min_p_wide=0.11`: ROI `0.3624`（bets=77）
 - `candidate min_p_wide=0.12`: ROI `0.4064`（bets=59）
 - `candidate min_p_wide=0.14`: ROI `0.4516`（bets=34）
