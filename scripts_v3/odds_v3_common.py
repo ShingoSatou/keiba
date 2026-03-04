@@ -166,9 +166,7 @@ def select_final_snapshot(odds_long: pd.DataFrame) -> pd.DataFrame:
         kind="mergesort",
     )
     chosen = work.drop_duplicates(["race_id", "horse_no"], keep="first")
-    return chosen[
-        ["race_id", "horse_no", "odds_win", "data_kbn", "announce_datetime"]
-    ].rename(
+    return chosen[["race_id", "horse_no", "odds_win", "data_kbn", "announce_datetime"]].rename(
         columns={
             "odds_win": "odds_win_final",
             "data_kbn": "odds_final_data_kbn",

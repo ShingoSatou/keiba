@@ -102,8 +102,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--odds-cal-cols",
         default="",
         help=(
-            "Comma-separated calibration columns to use. "
-            "Empty means auto-detect from odds-cal-oof."
+            "Comma-separated calibration columns to use. Empty means auto-detect from odds-cal-oof."
         ),
     )
     parser.add_argument(
@@ -238,9 +237,7 @@ def _load_odds_calibration_oof(path: Path, cols_hint: list[str]) -> tuple[pd.Dat
             raise SystemExit(f"--odds-cal-cols not found in {path}: {missing_hint}")
     else:
         cal_cols = sorted(
-            col
-            for col in df.columns
-            if "_cal_" in col and (("_t10_" in col) or ("_final_" in col))
+            col for col in df.columns if "_cal_" in col and (("_t10_" in col) or ("_final_" in col))
         )
     if not cal_cols:
         return pd.DataFrame(columns=["race_id", "horse_no"]), []
@@ -456,9 +453,7 @@ def _artifact_from_fit(
             "top_k": 3,
         },
         "operational_mode": (
-            "t10_only"
-            if not bool(args.include_final_odds_features)
-            else "includes_final"
+            "t10_only" if not bool(args.include_final_odds_features) else "includes_final"
         ),
         "train_summary": {
             "years": list(map(int, train_years)),

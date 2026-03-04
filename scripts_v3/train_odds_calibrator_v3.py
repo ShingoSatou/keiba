@@ -144,9 +144,7 @@ def main(argv: list[str] | None = None) -> int:
         holdout_year=int(args.holdout_year),
     )
 
-    oof = train_frame[
-        ["race_id", "horse_id", "horse_no", "race_date", "year", "y_win"]
-    ].copy()
+    oof = train_frame[["race_id", "horse_id", "horse_no", "race_date", "year", "y_win"]].copy()
     oof = oof.rename(columns={"year": "valid_year"})
 
     fold_metrics: list[dict[str, Any]] = []

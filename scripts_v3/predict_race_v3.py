@@ -243,8 +243,7 @@ def _validate_operational_t10(feature_cols: list[str]) -> None:
     forbidden = [col for col in feature_cols if "_final_" in col]
     if forbidden:
         raise SystemExit(
-            "Operational t10 path forbids final-odds features in PL model. "
-            f"Found: {forbidden[:10]}"
+            f"Operational t10 path forbids final-odds features in PL model. Found: {forbidden[:10]}"
         )
 
 
