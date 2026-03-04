@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-import hashlib
-import json
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
 
-from scripts_v2.train_ranker_v2 import _assert_fold_integrity, build_rolling_year_folds
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+from scripts_v3.v3_common import (
+    PROJECT_ROOT,
+    assert_fold_integrity,
+    build_rolling_year_folds,
+    hash_files,
+    resolve_path,
+    save_json,
+)
 
 IDENTIFIER_COLUMNS = {
     "race_id",
@@ -25,25 +27,6 @@ IDENTIFIER_COLUMNS = {
     "y_win",
     "y_place",
 }
-
-
-def resolve_path(path_str: str) -> Path:
-    path = Path(path_str)
-    if path.is_absolute():
-        return path
-    return (PROJECT_ROOT / path).resolve()
-
-
-def save_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def hash_files(paths: list[Path]) -> str:
-    digest = hashlib.sha256()
-    for path in sorted(paths):
-        digest.update(path.read_bytes())
-    return digest.hexdigest()
 
 
 def prepare_binary_frame(frame: pd.DataFrame, *, label_col: str) -> pd.DataFrame:
@@ -172,7 +155,7 @@ def compute_binary_metrics(
 
 
 def fold_integrity(train_df: pd.DataFrame, valid_df: pd.DataFrame, valid_year: int) -> None:
-    _assert_fold_integrity(train_df, valid_df, int(valid_year))
+    assert_fold_integrity(train_df, valid_df, int(valid_year))
 
 
 def build_oof_frame(

@@ -18,13 +18,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts_v2.train_ranker_v2 import build_rolling_year_folds
 from scripts_v3.train_binary_v3_common import (
     compute_binary_metrics,
     hash_files,
     resolve_path,
     save_json,
 )
+from scripts_v3.v3_common import build_rolling_year_folds  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

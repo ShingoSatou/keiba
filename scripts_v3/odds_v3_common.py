@@ -6,7 +6,7 @@ from datetime import timedelta
 import numpy as np
 import pandas as pd
 
-from scripts_v2.build_features_v2 import build_race_datetime
+from scripts_v3.v3_common import build_race_datetime
 
 FINAL_KBN_PRIORITY = {4: 0, 3: 1, 2: 2, 1: 3}
 

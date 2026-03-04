@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 from datetime import datetime
@@ -18,14 +17,16 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.infrastructure.database import Database  # noqa: E402
-from scripts_v2.bankroll_v2_common import (  # noqa: E402
+from scripts_v3.pl_v3_common import estimate_p_wide_by_race  # noqa: E402
+from scripts_v3.v3_common import (  # noqa: E402
     BankrollConfig,
     allocate_race_bets,
     compute_max_drawdown,
+    kumiban_from_horse_nos,
+    resolve_path,
     round_down_to_unit,
+    save_json,
 )
-from scripts_v2.wide_prob_v2_common import kumiban_from_horse_nos  # noqa: E402
-from scripts_v3.pl_v3_common import estimate_p_wide_by_race  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -81,18 +82,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args(argv)
-
-
-def resolve_path(path_str: str) -> Path:
-    path = Path(path_str)
-    if path.is_absolute():
-        return path
-    return (PROJECT_ROOT / path).resolve()
-
-
-def save_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def parse_years(raw: str) -> list[int]:
@@ -580,45 +569,19 @@ def _round_or_none(value: Any, digits: int) -> float | None:
     return round(numeric, digits)
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-    logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO))
-
-    if args.holdout_year <= 0:
-        raise SystemExit("--holdout-year must be > 0")
-    if args.mc_samples <= 0:
-        raise SystemExit("--mc-samples must be > 0")
-    if args.pl_top_k <= 1:
-        raise SystemExit("--pl-top-k must be > 1")
-    if not (0.0 <= float(args.min_p_wide) <= 1.0):
-        raise SystemExit("--min-p-wide must be in [0, 1]")
-    if args.min_p_wide_stage not in MIN_P_WIDE_STAGE_CHOICES:
-        raise SystemExit(
-            f"--min-p-wide-stage must be one of {MIN_P_WIDE_STAGE_CHOICES}. "
-            f"got={args.min_p_wide_stage}"
-        )
-    if args.max_bets_per_race <= 0:
-        raise SystemExit("--max-bets-per-race must be > 0")
-    if args.kelly_fraction < 0.0:
-        raise SystemExit("--kelly-fraction must be >= 0")
-    if args.race_cap_fraction <= 0.0:
-        raise SystemExit("--race-cap-fraction must be > 0")
-    if args.daily_cap_fraction <= 0.0:
-        raise SystemExit("--daily-cap-fraction must be > 0")
-    if args.bankroll_init_yen <= 0:
-        raise SystemExit("--bankroll-init-yen must be > 0")
-    if args.bet_unit_yen <= 0:
-        raise SystemExit("--bet-unit-yen must be > 0")
-    if args.min_bet_yen <= 0:
-        raise SystemExit("--min-bet-yen must be > 0")
-    if args.min_bet_yen % args.bet_unit_yen != 0:
-        raise SystemExit("--min-bet-yen must be a multiple of --bet-unit-yen")
-
-    max_bet_yen = args.max_bet_yen if args.max_bet_yen > 0 else None
-    output_path = resolve_path(args.output)
-    meta_output_path = resolve_path(args.meta_output)
-    check_overwrite([output_path, meta_output_path], force=args.force)
-
+def _prepare_backtest_data(
+    args: argparse.Namespace,
+) -> tuple[
+    pd.DataFrame,
+    pd.DataFrame,
+    dict[int, pd.DataFrame],
+    dict[tuple[int, str], int],
+    BankrollConfig,
+    str,
+    str,
+    list[int],
+    list[int],
+]:
     input_path = resolve_path(args.input)
     loaded_input, input_mode, p_wide_source = load_backtest_input(input_path)
     selected_input, selected_years, available_years = select_backtest_years(
@@ -653,6 +616,8 @@ def main(argv: list[str] | None = None) -> int:
         len(selected_input),
         len(pair_probs),
     )
+
+    from app.infrastructure.database import Database
 
     with Database() as db:
         odds_df, payout_df, race_df, runner_df = fetch_db_tables(db, race_ids)
@@ -705,6 +670,7 @@ def main(argv: list[str] | None = None) -> int:
         for row in payout_df.to_dict("records")
     }
 
+    max_bet_yen = args.max_bet_yen if args.max_bet_yen > 0 else None
     bankroll_config = BankrollConfig(
         bankroll_init_yen=int(args.bankroll_init_yen),
         kelly_fraction_scale=float(args.kelly_fraction),
@@ -726,6 +692,44 @@ def main(argv: list[str] | None = None) -> int:
     race_rows["race_date"] = pd.to_datetime(race_rows["race_date"], errors="coerce")
     race_rows = race_rows.sort_values(["race_date", "race_id"], kind="mergesort")
     race_rows = race_rows.reset_index(drop=True)
+
+    pair_probs["horse_name_1"] = pair_probs.apply(
+        lambda r: runner_name_map.get(
+            (int(r["race_id"]), int(r["horse_no_1"])), f"馬番{int(r['horse_no_1'])}"
+        ),
+        axis=1,
+    )
+    pair_probs["horse_name_2"] = pair_probs.apply(
+        lambda r: runner_name_map.get(
+            (int(r["race_id"]), int(r["horse_no_2"])), f"馬番{int(r['horse_no_2'])}"
+        ),
+        axis=1,
+    )
+    # _simulate_backtest 内で horse_name_{1|2} を使用するため保持します
+
+    return (
+        race_rows,
+        pair_probs,
+        odds_by_race,
+        payout_map,
+        bankroll_config,
+        input_mode,
+        p_wide_source,
+        selected_years,
+        available_years,
+        metric_frame,
+    )
+
+
+def _simulate_backtest(
+    args: argparse.Namespace,
+    race_rows: pd.DataFrame,
+    pair_probs: pd.DataFrame,
+    odds_by_race: dict[int, pd.DataFrame],
+    payout_map: dict[tuple[int, str], int],
+    bankroll_config: BankrollConfig,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    import pandas as pd
 
     bankroll = int(bankroll_config.bankroll_init_yen)
     equity_curve = [float(bankroll)]
@@ -812,12 +816,12 @@ def main(argv: list[str] | None = None) -> int:
             race_total_return += payout
             race_hit_count += 1 if is_hit else 0
 
-            horse_name_1 = runner_name_map.get((race_id, horse_no_1), f"馬番{horse_no_1}")
-            horse_name_2 = runner_name_map.get((race_id, horse_no_2), f"馬番{horse_no_2}")
-            pair_display_name = f"{horse_name_1} / {horse_name_2}"
-
             valid_year_raw = row.get("valid_year", race.get("valid_year"))
             valid_year = int(valid_year_raw) if pd.notna(valid_year_raw) else None
+
+            horse_name_1 = row.get("horse_name_1", f"馬番{horse_no_1}")
+            horse_name_2 = row.get("horse_name_2", f"馬番{horse_no_2}")
+            pair_display_name = f"{horse_name_1} / {horse_name_2}"
 
             bet_records.append(
                 {
@@ -882,7 +886,6 @@ def main(argv: list[str] | None = None) -> int:
     max_dd = compute_max_drawdown(equity_curve)
     period_from = min((row["race_date"] for row in bet_records), default="")
     period_to = max((row["race_date"] for row in bet_records), default="")
-    logloss_value, auc_value = quality_metrics(metric_frame)
 
     summary = {
         "period_from": period_from,
@@ -895,25 +898,42 @@ def main(argv: list[str] | None = None) -> int:
         "total_return": int(total_return),
         "roi": round(roi, 4),
         "max_drawdown": int(round(max_dd)),
-        "logloss": round(float(logloss_value), 4) if logloss_value is not None else None,
-        "auc": round(float(auc_value), 4) if auc_value is not None else None,
     }
+    return summary, monthly_rows, bet_records
+
+
+def _build_backtest_report(
+    args: argparse.Namespace,
+    summary: dict[str, Any],
+    monthly_rows: list[dict[str, Any]],
+    bet_records: list[dict[str, Any]],
+    bankroll_config: BankrollConfig,
+    input_mode: str,
+    p_wide_source: str,
+    selected_years: list[int],
+    available_years: list[int],
+    loaded_input_len: int,
+    pair_probs: pd.DataFrame,
+    metric_frame: pd.DataFrame,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    logloss_value, auc_value = quality_metrics(metric_frame)
+    if "logloss" not in summary:
+        summary["logloss"] = round(float(logloss_value), 4) if logloss_value is not None else None
+        summary["auc"] = round(float(auc_value), 4) if auc_value is not None else None
 
     payload = {
         "summary": summary,
         "monthly": monthly_rows,
         "bets": bet_records,
     }
-    save_json(output_path, payload)
 
     meta_payload = {
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "input": {
-            "path": str(input_path),
+            "path": str(resolve_path(args.input)),
             "input_mode": input_mode,
             "p_wide_source": p_wide_source,
-            "rows": int(len(loaded_input)),
-            "selected_rows": int(len(selected_input)),
+            "rows": int(loaded_input_len),
             "pair_rows_for_backtest": int(len(pair_probs)),
             "selected_races": int(pair_probs["race_id"].nunique()),
             "available_years_after_holdout_filter": available_years,
@@ -949,12 +969,98 @@ def main(argv: list[str] | None = None) -> int:
             "horse_name": "core.runner(horse_name)",
         },
         "output": {
-            "result_path": str(output_path),
-            "meta_path": str(meta_output_path),
-            "n_bets": int(n_bets),
+            "result_path": str(resolve_path(args.output)),
+            "meta_path": str(resolve_path(args.meta_output)),
+            "n_bets": int(len(bet_records)),
             "n_months": int(len(monthly_rows)),
         },
     }
+    return payload, meta_payload
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO))
+
+    if args.holdout_year <= 0:
+        raise SystemExit("--holdout-year must be > 0")
+    if args.mc_samples <= 0:
+        raise SystemExit("--mc-samples must be > 0")
+    if args.pl_top_k <= 1:
+        raise SystemExit("--pl-top-k must be > 1")
+    if not (0.0 <= float(args.min_p_wide) <= 1.0):
+        raise SystemExit("--min-p-wide must be in [0, 1]")
+    if args.min_p_wide_stage not in MIN_P_WIDE_STAGE_CHOICES:
+        raise SystemExit(
+            f"--min-p-wide-stage must be one of {MIN_P_WIDE_STAGE_CHOICES}. "
+            f"got={args.min_p_wide_stage}"
+        )
+    if args.max_bets_per_race <= 0:
+        raise SystemExit("--max-bets-per-race must be > 0")
+    if args.kelly_fraction < 0.0:
+        raise SystemExit("--kelly-fraction must be >= 0")
+    if args.race_cap_fraction <= 0.0:
+        raise SystemExit("--race-cap-fraction must be > 0")
+    if args.daily_cap_fraction <= 0.0:
+        raise SystemExit("--daily-cap-fraction must be > 0")
+    if args.bankroll_init_yen <= 0:
+        raise SystemExit("--bankroll-init-yen must be > 0")
+    if args.bet_unit_yen <= 0:
+        raise SystemExit("--bet-unit-yen must be > 0")
+    if args.min_bet_yen <= 0:
+        raise SystemExit("--min-bet-yen must be > 0")
+    if args.min_bet_yen % args.bet_unit_yen != 0:
+        raise SystemExit("--min-bet-yen must be a multiple of --bet-unit-yen")
+
+    output_path = resolve_path(args.output)
+    meta_output_path = resolve_path(args.meta_output)
+    check_overwrite([output_path, meta_output_path], force=args.force)
+
+    # 1. データの準備
+    (
+        race_rows,
+        pair_probs,
+        odds_by_race,
+        payout_map,
+        bankroll_config,
+        input_mode,
+        p_wide_source,
+        selected_years,
+        available_years,
+        metric_frame,
+    ) = _prepare_backtest_data(args)
+
+    # 2. シミュレーション実行
+    summary, monthly_rows, bet_records = _simulate_backtest(
+        args=args,
+        race_rows=race_rows,
+        pair_probs=pair_probs,
+        odds_by_race=odds_by_race,
+        payout_map=payout_map,
+        bankroll_config=bankroll_config,
+    )
+
+    # load test raw input needed for len computation
+    input_path = resolve_path(args.input)
+    loaded_input, _, _ = load_backtest_input(input_path)
+
+    # 3. メトリクス/メタ組み立て
+    payload, meta_payload = _build_backtest_report(
+        args=args,
+        summary=summary,
+        monthly_rows=monthly_rows,
+        bet_records=bet_records,
+        bankroll_config=bankroll_config,
+        input_mode=input_mode,
+        p_wide_source=p_wide_source,
+        selected_years=selected_years,
+        available_years=available_years,
+        loaded_input_len=int(len(loaded_input)),
+        pair_probs=pair_probs,
+        metric_frame=metric_frame,
+    )
+
+    save_json(output_path, payload)
     save_json(meta_output_path, meta_payload)
 
     logger.info(
