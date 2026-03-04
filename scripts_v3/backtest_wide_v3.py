@@ -450,8 +450,7 @@ def _estimate_pair_probs_from_horse(
     if out.duplicated(["race_id", "horse_no_1", "horse_no_2"]).any():
         dup = out[out.duplicated(["race_id", "horse_no_1", "horse_no_2"], keep=False)].head(5)
         raise SystemExit(
-            "Duplicate pair rows generated from horse-level input. "
-            f"sample={dup.to_dict('records')}"
+            f"Duplicate pair rows generated from horse-level input. sample={dup.to_dict('records')}"
         )
     return out.sort_values(["race_id", "horse_no_1", "horse_no_2"], kind="mergesort").reset_index(
         drop=True
