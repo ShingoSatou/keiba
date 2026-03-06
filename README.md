@@ -31,10 +31,15 @@ uv run python scripts_v2/load_to_db.py --input-dir data/
 
 ## v3（追加）
 
-- 仕様: `docs/specs_v3/v3_実装仕様.md`
+- 仕様書インデックス: `docs/specs_v3/v3_システム仕様書.md`
+- 全体構成 / データフロー: `docs/specs_v3/v3_01_全体アーキテクチャ.md`
+- 特徴量生成 / odds: `docs/specs_v3/v3_02_特徴量生成とオッズ仕様.md`
+- binary / 校正: `docs/specs_v3/v3_03_二値分類と校正仕様.md`
+- PL / 推論 / ROI: `docs/specs_v3/v3_04_PL推論とワイドバックテスト仕様.md`
+- 共通基盤 / テスト / CLI: `docs/specs_v3/v3_05_共通基盤と付録.md`
 - 運用手順: `docs/ops_v3/スクリプトリファレンス.md`
 - 推定前提: `docs/ops_v3/Assumptions.md`
-- 実行結果: `docs/ops_v3/v3_run_report_2026-03-04.md`
+- 実行結果: `docs/ops_v3/v3_run_report_*.md`
 
 ## v1について（参照専用）
 
