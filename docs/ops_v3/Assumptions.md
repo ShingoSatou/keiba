@@ -15,10 +15,21 @@
    - binary: `--operational-mode includes_final`
    - PL: `--include-final-odds-features`
    - 運用推論（`predict_race_v3.py`）は引き続き t10 特徴のみを許可する
-7. PL学習で使う後段入力は OOF 予測のみとし、OOFが欠ける行は PL 学習対象から除外する。
-8. PL の context 特徴は small registry に固定し、frame 全 numeric の自動収集は行わない。
-9. PLは `u`（馬ID固定効果）を持たず、線形スコア `w^T x` のみを学習する。
-10. PLの `p_top3` / `p_wide` は Monte Carlo 推定を採用し、乱数シードは race_id とグローバルseedから決定する。
-11. ROI算出のデフォルトは v3の `scripts_v3/backtest_wide_v3.py` を利用し、`pl_score -> MC -> p_wide`（または `train_pl_v3.py --emit-wide-oof` が出力した `p_wide`）で評価する。
-12. 旧方式の v2近似（`scripts_v2/backtest_wide_v2.py`: `p_top3 -> p/(1-p) -> p_wide`）は比較用の参考経路として扱い、v3の標準評価経路にはしない。
-13. binary では bundle meta に加えて feature manifest を保存し、feature contract は unit test で固定する。
+7. PL の default feature profile は `meta_default` とする。
+   - `p_win_meta`
+   - `p_place_meta`
+   - `p_win_odds_t10_norm`
+   - `PL_CONTEXT_FEATURES_SMALL`
+   - 比較用に `raw_legacy` profile を残す。
+8. `p_win_meta` / `p_place_meta` は base 予測の結合器として `race_id` grouped の通常CVで生成する convenience OOF とする。
+   - `StratifiedGroupKFold` を第一候補とし、難しい場合は `GroupKFold` にフォールバックする。
+   - `cv_is_temporal = false`
+   - `meta_oof_is_strict_temporal = false`
+   - `meta_metrics_are_reference_only = true`
+9. PL学習で使う後段入力は contract で要求された予測列のみとし、必要列が欠ける行は PL 学習対象から除外する。
+10. PL の context 特徴は small registry に固定し、frame 全 numeric の自動収集は行わない。
+11. PLは `u`（馬ID固定効果）を持たず、線形スコア `w^T x` のみを学習する。
+12. PLの `p_top3` / `p_wide` は Monte Carlo 推定を採用し、乱数シードは race_id とグローバルseedから決定する。
+13. ROI算出のデフォルトは v3の `scripts_v3/backtest_wide_v3.py` を利用し、`pl_score -> MC -> p_wide`（または `train_pl_v3.py --emit-wide-oof` が出力した `p_wide`）で評価する。
+14. 旧方式の v2近似（`scripts_v2/backtest_wide_v2.py`: `p_top3 -> p/(1-p) -> p_wide`）は比較用の参考経路として扱い、v3の標準評価経路にはしない。
+15. binary では bundle meta に加えて feature manifest を保存し、feature contract は unit test で固定する。

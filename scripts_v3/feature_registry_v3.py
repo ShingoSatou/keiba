@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 OPERATIONAL_MODE_CHOICES = ("t10_only", "includes_final")
+PL_FEATURE_PROFILE_CHOICES = ("meta_default", "raw_legacy")
 FEATURE_MANIFEST_VERSION = 1
 
 BINARY_BASE_FEATURES = [
@@ -57,7 +58,7 @@ BINARY_T10_ODDS_FEATURES = [
 ]
 BINARY_ENTITY_ID_FEATURES = ["jockey_key", "trainer_key"]
 
-PL_REQUIRED_PRED_FEATURES = [
+PL_REQUIRED_PRED_FEATURES_RAW_LEGACY = [
     "p_win_lgbm",
     "p_win_xgb",
     "p_win_cat",
@@ -65,6 +66,12 @@ PL_REQUIRED_PRED_FEATURES = [
     "p_place_xgb",
     "p_place_cat",
 ]
+PL_REQUIRED_PRED_FEATURES_META = [
+    "p_win_meta",
+    "p_place_meta",
+]
+PL_REQUIRED_PRED_FEATURES = PL_REQUIRED_PRED_FEATURES_RAW_LEGACY
+PL_META_DEFAULT_ODDS_FEATURES = ["p_win_odds_t10_norm"]
 PL_T10_ODDS_FEATURES = [
     "odds_win_t10",
     "odds_t10_data_kbn",
@@ -118,6 +125,14 @@ def _validate_operational_mode(operational_mode: str) -> None:
         )
 
 
+def _validate_pl_feature_profile(feature_profile: str) -> None:
+    if feature_profile not in PL_FEATURE_PROFILE_CHOICES:
+        raise ValueError(
+            f"Unknown feature_profile={feature_profile!r}. "
+            f"Expected one of {PL_FEATURE_PROFILE_CHOICES}."
+        )
+
+
 def _dedupe_existing(frame: pd.DataFrame, cols: list[str]) -> list[str]:
     existing = set(map(str, frame.columns))
     deduped: list[str] = []
@@ -154,17 +169,27 @@ def get_binary_feature_columns(
 
 def get_pl_feature_columns(
     frame: pd.DataFrame,
+    *,
+    feature_profile: str,
     required_pred_cols: list[str],
     include_context: bool,
     include_final_odds: bool,
     operational_mode: str,
 ) -> list[str]:
     _validate_operational_mode(operational_mode)
+    _validate_pl_feature_profile(feature_profile)
 
-    cols = [*required_pred_cols, *PL_T10_ODDS_FEATURES]
+    if feature_profile == "meta_default":
+        odds_cols = PL_META_DEFAULT_ODDS_FEATURES
+    else:
+        odds_cols = PL_T10_ODDS_FEATURES
+
+    cols = [*required_pred_cols, *odds_cols]
     if include_context:
         cols.extend(PL_CONTEXT_FEATURES_SMALL)
-    if include_final_odds or operational_mode == "includes_final":
+    if feature_profile == "raw_legacy" and (
+        include_final_odds or operational_mode == "includes_final"
+    ):
         cols.extend(FINAL_ODDS_BASE_FEATURES)
 
     feature_cols = _dedupe_existing(frame, cols)
@@ -174,6 +199,29 @@ def get_pl_feature_columns(
         stage="pl",
     )
     return feature_cols
+
+
+def get_pl_required_pred_columns(
+    feature_profile: str,
+    odds_cal_cols: list[str] | None = None,
+    include_calibrated_odds_features: bool = False,
+) -> list[str]:
+    _validate_pl_feature_profile(feature_profile)
+    cols: list[str]
+    if feature_profile == "meta_default":
+        cols = [*PL_REQUIRED_PRED_FEATURES_META, *PL_META_DEFAULT_ODDS_FEATURES]
+    else:
+        cols = [*PL_REQUIRED_PRED_FEATURES_RAW_LEGACY]
+        if include_calibrated_odds_features and odds_cal_cols:
+            cols.extend(list(odds_cal_cols))
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for col in cols:
+        if col in seen:
+            continue
+        seen.add(col)
+        deduped.append(col)
+    return deduped
 
 
 def validate_feature_contract(
@@ -216,10 +264,15 @@ __all__ = [
     "FORBIDDEN_FINAL_ODDS_FEATURES",
     "OPERATIONAL_MODE_CHOICES",
     "PL_CONTEXT_FEATURES_SMALL",
+    "PL_FEATURE_PROFILE_CHOICES",
+    "PL_META_DEFAULT_ODDS_FEATURES",
     "PL_REQUIRED_PRED_FEATURES",
+    "PL_REQUIRED_PRED_FEATURES_META",
+    "PL_REQUIRED_PRED_FEATURES_RAW_LEGACY",
     "PL_T10_ODDS_FEATURES",
     "POST_RACE_FORBIDDEN_FEATURES",
     "get_binary_feature_columns",
     "get_pl_feature_columns",
+    "get_pl_required_pred_columns",
     "validate_feature_contract",
 ]
