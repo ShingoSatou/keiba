@@ -17,8 +17,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts_v3.feature_registry_v3 import (  # noqa: E402
-    PL_REQUIRED_PRED_FEATURES,
+    PL_FEATURE_PROFILE_CHOICES,
     get_pl_feature_columns,
+    get_pl_required_pred_columns,
 )
 from scripts_v3.pl_v3_common import (  # noqa: E402
     PLTrainConfig,
@@ -61,16 +62,48 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         )
     )
     parser.add_argument("--features-input", default="data/features_v3.parquet")
+    parser.add_argument("--holdout-input", default="")
+    parser.add_argument(
+        "--pl-feature-profile",
+        choices=list(PL_FEATURE_PROFILE_CHOICES),
+        default="meta_default",
+    )
     parser.add_argument("--win-lgbm-oof", default="data/oof/win_lgbm_oof.parquet")
     parser.add_argument("--win-xgb-oof", default="data/oof/win_xgb_oof.parquet")
     parser.add_argument("--win-cat-oof", default="data/oof/win_cat_oof.parquet")
     parser.add_argument("--place-lgbm-oof", default="data/oof/place_lgbm_oof.parquet")
     parser.add_argument("--place-xgb-oof", default="data/oof/place_xgb_oof.parquet")
     parser.add_argument("--place-cat-oof", default="data/oof/place_cat_oof.parquet")
+    parser.add_argument("--win-meta-oof", default="data/oof/win_meta_oof.parquet")
+    parser.add_argument("--place-meta-oof", default="data/oof/place_meta_oof.parquet")
+    parser.add_argument(
+        "--win-lgbm-holdout", default="data/holdout/win_lgbm_holdout_pred_v3.parquet"
+    )
+    parser.add_argument("--win-xgb-holdout", default="data/holdout/win_xgb_holdout_pred_v3.parquet")
+    parser.add_argument("--win-cat-holdout", default="data/holdout/win_cat_holdout_pred_v3.parquet")
+    parser.add_argument(
+        "--place-lgbm-holdout",
+        default="data/holdout/place_lgbm_holdout_pred_v3.parquet",
+    )
+    parser.add_argument(
+        "--place-xgb-holdout",
+        default="data/holdout/place_xgb_holdout_pred_v3.parquet",
+    )
+    parser.add_argument(
+        "--place-cat-holdout",
+        default="data/holdout/place_cat_holdout_pred_v3.parquet",
+    )
+    parser.add_argument(
+        "--win-meta-holdout", default="data/holdout/win_meta_holdout_pred_v3.parquet"
+    )
+    parser.add_argument(
+        "--place-meta-holdout",
+        default="data/holdout/place_meta_holdout_pred_v3.parquet",
+    )
     parser.add_argument(
         "--odds-cal-oof",
         default="data/oof/odds_win_calibration_oof.parquet",
-        help="Optional. If file exists, *_cal_* columns are merged.",
+        help="Optional. Used only for raw_legacy when --odds-cal-cols is set.",
     )
     parser.add_argument(
         "--odds-cal-cols",
@@ -101,13 +134,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--mc-samples", type=int, default=DEFAULT_MC_SAMPLES)
 
-    parser.add_argument("--oof-output", default="data/oof/pl_v3_oof.parquet")
-    parser.add_argument("--wide-oof-output", default="data/oof/pl_v3_wide_oof.parquet")
+    parser.add_argument("--oof-output", default="")
+    parser.add_argument("--wide-oof-output", default="")
     parser.add_argument("--emit-wide-oof", action="store_true")
-    parser.add_argument("--metrics-output", default="data/oof/pl_v3_cv_metrics.json")
-    parser.add_argument("--model-output", default="models/pl_v3_recent_window.joblib")
-    parser.add_argument("--all-years-model-output", default="models/pl_v3_all_years.joblib")
-    parser.add_argument("--meta-output", default="models/pl_v3_bundle_meta.json")
+    parser.add_argument("--metrics-output", default="")
+    parser.add_argument("--model-output", default="")
+    parser.add_argument("--all-years-model-output", default="")
+    parser.add_argument("--meta-output", default="")
+    parser.add_argument("--holdout-output", default="")
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args(argv)
 
@@ -144,6 +178,36 @@ def _dedupe_preserve_order(cols: list[str]) -> list[str]:
 
 def _operational_mode(include_final_odds_features: bool) -> str:
     return "includes_final" if bool(include_final_odds_features) else "t10_only"
+
+
+def _meta_input_mode(feature_profile: str) -> str:
+    return "grouped_reference_oof" if str(feature_profile) == "meta_default" else "none_raw_legacy"
+
+
+def _profile_suffix(feature_profile: str) -> str:
+    return "" if str(feature_profile) == "meta_default" else f"_{feature_profile}"
+
+
+def _resolve_output_paths(args: argparse.Namespace) -> dict[str, Path]:
+    suffix = _profile_suffix(str(args.pl_feature_profile))
+    defaults = {
+        "oof": f"data/oof/pl_v3_oof{suffix}.parquet",
+        "wide_oof": f"data/oof/pl_v3_wide_oof{suffix}.parquet",
+        "metrics": f"data/oof/pl_v3_cv_metrics{suffix}.json",
+        "model": f"models/pl_v3_recent_window{suffix}.joblib",
+        "all_years_model": f"models/pl_v3_all_years{suffix}.joblib",
+        "meta": f"models/pl_v3_bundle_meta{suffix}.json",
+        "holdout": f"data/oof/pl_v3_holdout_2025_pred{suffix}.parquet",
+    }
+    return {
+        "oof": resolve_path(args.oof_output or defaults["oof"]),
+        "wide_oof": resolve_path(args.wide_oof_output or defaults["wide_oof"]),
+        "metrics": resolve_path(args.metrics_output or defaults["metrics"]),
+        "model": resolve_path(args.model_output or defaults["model"]),
+        "all_years_model": resolve_path(args.all_years_model_output or defaults["all_years_model"]),
+        "meta": resolve_path(args.meta_output or defaults["meta"]),
+        "holdout": resolve_path(args.holdout_output or defaults["holdout"]),
+    }
 
 
 def _prep_base_frame(features_path: Path) -> pd.DataFrame:
@@ -193,25 +257,78 @@ def _prep_base_frame(features_path: Path) -> pd.DataFrame:
     return out.sort_values(["race_id", "horse_no"], kind="mergesort").reset_index(drop=True)
 
 
-def _load_single_oof_prediction(path: Path, pred_col: str) -> pd.DataFrame:
+def _prep_holdout_frame(holdout_path: Path) -> pd.DataFrame:
+    if not holdout_path.exists():
+        raise SystemExit(f"holdout input not found: {holdout_path}")
+    frame = pd.read_parquet(holdout_path)
+    required = {"race_id", "horse_id", "horse_no", "race_date", "field_size"}
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise SystemExit(f"Missing required columns in holdout input: {missing}")
+
+    out = frame.copy()
+    out["race_id"] = pd.to_numeric(out["race_id"], errors="coerce").astype("Int64")
+    out["horse_no"] = pd.to_numeric(out["horse_no"], errors="coerce").astype("Int64")
+    out = out[out["race_id"].notna() & out["horse_no"].notna()].copy()
+    out["race_id"] = out["race_id"].astype(int)
+    out["horse_no"] = out["horse_no"].astype(int)
+    out["horse_id"] = out["horse_id"].astype(str)
+
+    out["race_date"] = pd.to_datetime(out["race_date"], errors="coerce")
+    out = out[out["race_date"].notna()].copy()
+    out["year"] = out["race_date"].dt.year.astype(int)
+    out["field_size"] = pd.to_numeric(out["field_size"], errors="coerce")
+    if "finish_pos" in out.columns:
+        out["finish_pos"] = pd.to_numeric(out["finish_pos"], errors="coerce")
+        out["y_top3"] = np.where(
+            out["finish_pos"].notna(),
+            (out["finish_pos"] <= 3).astype(int),
+            np.nan,
+        )
+    if "y_win" in out.columns:
+        out["y_win"] = pd.to_numeric(out["y_win"], errors="coerce").fillna(0).astype(int)
+    if "y_place" in out.columns:
+        out["y_place"] = pd.to_numeric(out["y_place"], errors="coerce").fillna(0).astype(int)
+    if out.duplicated(["race_id", "horse_no"]).any():
+        dup = out[out.duplicated(["race_id", "horse_no"], keep=False)][
+            ["race_id", "horse_no"]
+        ].head()
+        raise SystemExit(
+            f"Duplicate (race_id, horse_no) in holdout input: {dup.to_dict('records')}"
+        )
+    return out.sort_values(["race_id", "horse_no"], kind="mergesort").reset_index(drop=True)
+
+
+def _load_single_prediction(
+    path: Path,
+    pred_col: str,
+    *,
+    require_valid_year: bool = True,
+) -> pd.DataFrame:
     if not path.exists():
-        raise SystemExit(f"OOF file not found: {path}")
+        raise SystemExit(f"prediction file not found: {path}")
     df = pd.read_parquet(path)
-    required = {"race_id", "horse_no", pred_col, "valid_year"}
+    required = {"race_id", "horse_no", pred_col}
+    if require_valid_year:
+        required.add("valid_year")
     missing = sorted(required - set(df.columns))
     if missing:
         raise SystemExit(f"Missing columns in {path}: {missing}")
 
-    out = df[["race_id", "horse_no", pred_col, "valid_year"]].copy()
+    keep_cols = ["race_id", "horse_no", pred_col]
+    if require_valid_year:
+        keep_cols.append("valid_year")
+    out = df[keep_cols].copy()
     out["race_id"] = pd.to_numeric(out["race_id"], errors="coerce").astype("Int64")
     out["horse_no"] = pd.to_numeric(out["horse_no"], errors="coerce").astype("Int64")
-    out["valid_year"] = pd.to_numeric(out["valid_year"], errors="coerce").astype("Int64")
+    if require_valid_year:
+        out["valid_year"] = pd.to_numeric(out["valid_year"], errors="coerce").astype("Int64")
     out = out[out["race_id"].notna() & out["horse_no"].notna()].copy()
     out["race_id"] = out["race_id"].astype(int)
     out["horse_no"] = out["horse_no"].astype(int)
     out[pred_col] = pd.to_numeric(out[pred_col], errors="coerce")
     if out.duplicated(["race_id", "horse_no"]).any():
-        raise SystemExit(f"Duplicate keys in OOF file: {path}")
+        raise SystemExit(f"Duplicate keys in prediction file: {path}")
     return out[["race_id", "horse_no", pred_col]]
 
 
@@ -249,55 +366,90 @@ def _load_odds_calibration_oof(path: Path, cols_hint: list[str]) -> tuple[pd.Dat
     return out[["race_id", "horse_no", *cal_cols]], cal_cols
 
 
+def _include_calibrated_odds_features(args: argparse.Namespace) -> bool:
+    return bool(_parse_csv(args.odds_cal_cols))
+
+
+def _external_pred_paths(
+    args: argparse.Namespace,
+    *,
+    holdout: bool,
+) -> dict[str, Path]:
+    profile = str(args.pl_feature_profile)
+    if profile == "meta_default":
+        return {
+            "p_win_meta": resolve_path(args.win_meta_holdout if holdout else args.win_meta_oof),
+            "p_place_meta": resolve_path(
+                args.place_meta_holdout if holdout else args.place_meta_oof
+            ),
+        }
+    return {
+        "p_win_lgbm": resolve_path(args.win_lgbm_holdout if holdout else args.win_lgbm_oof),
+        "p_win_xgb": resolve_path(args.win_xgb_holdout if holdout else args.win_xgb_oof),
+        "p_win_cat": resolve_path(args.win_cat_holdout if holdout else args.win_cat_oof),
+        "p_place_lgbm": resolve_path(args.place_lgbm_holdout if holdout else args.place_lgbm_oof),
+        "p_place_xgb": resolve_path(args.place_xgb_holdout if holdout else args.place_xgb_oof),
+        "p_place_cat": resolve_path(args.place_cat_holdout if holdout else args.place_cat_oof),
+    }
+
+
 def _merge_prediction_features(
+    args: argparse.Namespace,
+    frame: pd.DataFrame,
+) -> tuple[pd.DataFrame, list[str], dict[str, Path], list[str]]:
+    merged = frame.copy()
+
+    pred_paths = _external_pred_paths(args, holdout=False)
+    for pred_col, path in pred_paths.items():
+        pred_df = _load_single_prediction(path, pred_col, require_valid_year=True)
+        merged = merged.merge(pred_df, on=["race_id", "horse_no"], how="left")
+
+    cal_cols: list[str] = []
+    if str(args.pl_feature_profile) == "raw_legacy" and _include_calibrated_odds_features(args):
+        cal_cols_hint = _parse_csv(args.odds_cal_cols)
+        cal_df, cal_cols = _load_odds_calibration_oof(
+            resolve_path(args.odds_cal_oof), cal_cols_hint
+        )
+        if cal_cols:
+            merged = merged.merge(cal_df, on=["race_id", "horse_no"], how="left")
+
+    required_pred_cols = get_pl_required_pred_columns(
+        str(args.pl_feature_profile),
+        odds_cal_cols=sorted(cal_cols),
+        include_calibrated_odds_features=_include_calibrated_odds_features(args),
+    )
+    return merged, _dedupe_preserve_order(required_pred_cols), pred_paths, sorted(cal_cols)
+
+
+def _merge_holdout_prediction_features(
     args: argparse.Namespace,
     frame: pd.DataFrame,
 ) -> tuple[pd.DataFrame, list[str]]:
     merged = frame.copy()
-
-    win_paths = {
-        "lgbm": resolve_path(args.win_lgbm_oof),
-        "xgb": resolve_path(args.win_xgb_oof),
-        "cat": resolve_path(args.win_cat_oof),
-    }
-    place_paths = {
-        "lgbm": resolve_path(args.place_lgbm_oof),
-        "xgb": resolve_path(args.place_xgb_oof),
-        "cat": resolve_path(args.place_cat_oof),
-    }
-    pred_paths = {
-        "p_win_lgbm": win_paths["lgbm"],
-        "p_win_xgb": win_paths["xgb"],
-        "p_win_cat": win_paths["cat"],
-        "p_place_lgbm": place_paths["lgbm"],
-        "p_place_xgb": place_paths["xgb"],
-        "p_place_cat": place_paths["cat"],
-    }
-
-    for pred_col in PL_REQUIRED_PRED_FEATURES:
-        pred_df = _load_single_oof_prediction(pred_paths[pred_col], pred_col)
+    pred_paths = _external_pred_paths(args, holdout=True)
+    for pred_col, path in pred_paths.items():
+        pred_df = _load_single_prediction(path, pred_col, require_valid_year=False)
         merged = merged.merge(pred_df, on=["race_id", "horse_no"], how="left")
 
-    cal_cols_hint = _parse_csv(args.odds_cal_cols)
-    cal_df, cal_cols = _load_odds_calibration_oof(resolve_path(args.odds_cal_oof), cal_cols_hint)
-    if cal_cols:
-        merged = merged.merge(cal_df, on=["race_id", "horse_no"], how="left")
-    required_pred_cols = [col for col in PL_REQUIRED_PRED_FEATURES if col in merged.columns]
-    for col in sorted(cal_cols):
-        if "_t10_" in col or bool(args.include_final_odds_features):
-            required_pred_cols.append(col)
+    required_pred_cols = get_pl_required_pred_columns(
+        str(args.pl_feature_profile),
+        odds_cal_cols=sorted(_parse_csv(args.odds_cal_cols)),
+        include_calibrated_odds_features=_include_calibrated_odds_features(args),
+    )
     return merged, _dedupe_preserve_order(required_pred_cols)
 
 
 def _collect_pl_feature_columns(
     frame: pd.DataFrame,
     *,
+    feature_profile: str,
     required_pred_cols: list[str],
     include_final_odds: bool,
     operational_mode: str,
 ) -> list[str]:
     return get_pl_feature_columns(
         frame,
+        feature_profile=feature_profile,
         required_pred_cols=required_pred_cols,
         include_context=True,
         include_final_odds=include_final_odds,
@@ -401,6 +553,7 @@ def _artifact_from_fit(
     train_years: list[int],
     train_rows: int,
     train_races: int,
+    required_pred_cols: list[str],
 ) -> dict[str, Any]:
     return {
         "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
@@ -417,6 +570,10 @@ def _artifact_from_fit(
             "top_k": 3,
         },
         "operational_mode": _operational_mode(bool(args.include_final_odds_features)),
+        "pl_feature_profile": str(args.pl_feature_profile),
+        "meta_input_mode": _meta_input_mode(str(args.pl_feature_profile)),
+        "required_pred_cols": list(required_pred_cols),
+        "forbidden_feature_check_passed": True,
         "cv_policy": {
             "cv_window_policy": DEFAULT_CV_WINDOW_POLICY,
             "train_window_years": int(args.train_window_years),
@@ -613,6 +770,7 @@ def _train_pl_final_models(
     eligible: pd.DataFrame,
     years: list[int],
     pl_feature_cols: list[str],
+    required_pred_cols: list[str],
     args: argparse.Namespace,
     cv_policy: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any], pd.DataFrame, pd.DataFrame]:
@@ -639,8 +797,12 @@ def _train_pl_final_models(
         train_years=recent_years,
         train_rows=int(len(recent_df)),
         train_races=int(recent_df["race_id"].nunique()),
+        required_pred_cols=required_pred_cols,
     )
     artifact_recent["cv_policy"] = dict(cv_policy)
+    if str(args.pl_feature_profile) == "meta_default":
+        artifact_recent["meta_oof_is_strict_temporal"] = False
+        artifact_recent["meta_metrics_are_reference_only"] = True
 
     w_all, stats_all, _ = _fit_pl_on_frame(
         all_df,
@@ -656,9 +818,13 @@ def _train_pl_final_models(
         train_years=years,
         train_rows=int(len(all_df)),
         train_races=int(all_df["race_id"].nunique()),
+        required_pred_cols=required_pred_cols,
     )
     artifact_all["cv_policy"] = dict(cv_policy)
     artifact_all["analysis_only"] = True
+    if str(args.pl_feature_profile) == "meta_default":
+        artifact_all["meta_oof_is_strict_temporal"] = False
+        artifact_all["meta_metrics_are_reference_only"] = True
 
     return artifact_recent, artifact_all, recent_df, all_df
 
@@ -673,6 +839,7 @@ def _build_pl_metrics_payload(
     required_pred_cols: list[str],
     pl_feature_cols: list[str],
     args: argparse.Namespace,
+    holdout_summary: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """PL メトリクスの集計辞書を組み立てる。"""
     summary = {
@@ -682,7 +849,7 @@ def _build_pl_metrics_payload(
         "top3_auc": _summary([f.get("top3_auc") for f in fold_metrics]),
         "top3_ece": _summary([f.get("top3_ece") for f in fold_metrics]),
     }
-    return {
+    payload = {
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "cv_policy": build_cv_policy_payload(
             folds,
@@ -701,6 +868,8 @@ def _build_pl_metrics_payload(
             "mc_samples": int(args.mc_samples),
             "operational_mode": _operational_mode(bool(args.include_final_odds_features)),
             "include_final_odds_features": bool(args.include_final_odds_features),
+            "pl_feature_profile": str(args.pl_feature_profile),
+            "meta_input_mode": _meta_input_mode(str(args.pl_feature_profile)),
         },
         "data_summary": {
             "rows": int(len(eligible)),
@@ -711,9 +880,19 @@ def _build_pl_metrics_payload(
         },
         "required_pred_cols": required_pred_cols,
         "feature_columns": pl_feature_cols,
+        "pl_feature_profile": str(args.pl_feature_profile),
+        "meta_input_mode": _meta_input_mode(str(args.pl_feature_profile)),
+        "operational_mode": _operational_mode(bool(args.include_final_odds_features)),
+        "forbidden_feature_check_passed": True,
         "folds": fold_metrics,
         "summary": summary,
     }
+    if str(args.pl_feature_profile) == "meta_default":
+        payload["meta_oof_is_strict_temporal"] = False
+        payload["meta_metrics_are_reference_only"] = True
+    if holdout_summary is not None:
+        payload["holdout_summary"] = holdout_summary
+    return payload
 
 
 def _build_pl_meta_payload(
@@ -726,16 +905,19 @@ def _build_pl_meta_payload(
     metrics_output: Path,
     model_output: Path,
     all_years_model_output: Path,
+    holdout_output: Path,
     required_pred_cols: list[str],
     pl_feature_cols: list[str],
     cv_summary: dict[str, Any],
     recent_df: pd.DataFrame,
     all_df: pd.DataFrame,
     years: list[int],
+    input_paths: dict[str, str],
+    holdout_summary: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """PL バンドルメタ辞書を組み立てる。"""
     recent_years = sorted(recent_df["year"].unique().tolist())
-    return {
+    payload = {
         "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "holdout_rule": f"exclude year >= {args.holdout_year}",
         "cv_policy": build_cv_policy_payload(
@@ -745,22 +927,17 @@ def _build_pl_meta_payload(
             cv_window_policy=DEFAULT_CV_WINDOW_POLICY,
         ),
         "operational_mode": _operational_mode(bool(args.include_final_odds_features)),
-        "input_paths": {
-            "features_v3": str(features_path),
-            "win_lgbm_oof": str(resolve_path(args.win_lgbm_oof)),
-            "win_xgb_oof": str(resolve_path(args.win_xgb_oof)),
-            "win_cat_oof": str(resolve_path(args.win_cat_oof)),
-            "place_lgbm_oof": str(resolve_path(args.place_lgbm_oof)),
-            "place_xgb_oof": str(resolve_path(args.place_xgb_oof)),
-            "place_cat_oof": str(resolve_path(args.place_cat_oof)),
-            "odds_cal_oof": str(resolve_path(args.odds_cal_oof)),
-        },
+        "pl_feature_profile": str(args.pl_feature_profile),
+        "meta_input_mode": _meta_input_mode(str(args.pl_feature_profile)),
+        "forbidden_feature_check_passed": True,
+        "input_paths": {"features_v3": str(features_path), **input_paths},
         "output_paths": {
             "oof": str(oof_output),
             "wide_oof": str(wide_oof_output) if bool(args.emit_wide_oof) else None,
             "metrics": str(metrics_output),
             "main_model": str(model_output),
             "all_years_model": str(all_years_model_output),
+            "holdout_output": str(holdout_output),
         },
         "required_pred_cols": required_pred_cols,
         "feature_columns": pl_feature_cols,
@@ -781,6 +958,91 @@ def _build_pl_meta_payload(
             ]
         ),
     }
+    if str(args.pl_feature_profile) == "meta_default":
+        payload["meta_oof_is_strict_temporal"] = False
+        payload["meta_metrics_are_reference_only"] = True
+    if holdout_summary is not None:
+        payload["holdout_summary"] = holdout_summary
+    return payload
+
+
+def _score_holdout_predictions(
+    holdout_frame: pd.DataFrame,
+    *,
+    artifact: dict[str, Any],
+    required_pred_cols: list[str],
+    args: argparse.Namespace,
+) -> tuple[pd.DataFrame, dict[str, Any] | None]:
+    feature_cols = list(map(str, artifact["feature_columns"]))
+    stats = artifact["preprocess"]
+    weights = np.asarray(artifact["weights"], dtype=float)
+
+    for col in required_pred_cols:
+        if col in holdout_frame.columns:
+            holdout_frame[col] = pd.to_numeric(holdout_frame[col], errors="coerce")
+
+    scores = _score_frame(
+        holdout_frame,
+        feature_cols=feature_cols,
+        weights=weights,
+        stats=stats,
+    )
+    keep_cols = [
+        c
+        for c in [
+            "race_id",
+            "horse_id",
+            "horse_no",
+            "race_date",
+            "t_race",
+            "field_size",
+            "target_label",
+            "finish_pos",
+            "y_win",
+            "y_place",
+            "y_top3",
+            *required_pred_cols,
+        ]
+        if c in holdout_frame.columns
+    ]
+    scored = holdout_frame[keep_cols].copy()
+    scored["pl_score"] = scores
+    p_top3 = estimate_p_top3_by_race(
+        scored[["race_id", "horse_no", "pl_score"]],
+        score_col="pl_score",
+        mc_samples=int(args.mc_samples),
+        seed=int(args.seed) + 3000,
+        top_k=3,
+    )
+    scored = scored.merge(p_top3, on=["race_id", "horse_no"], how="left")
+    scored["valid_year"] = holdout_frame["year"].astype(int).to_numpy()
+    scored = attach_cv_policy_columns(
+        scored,
+        train_window_years=int(args.train_window_years),
+        holdout_year=int(args.holdout_year),
+        cv_window_policy=DEFAULT_CV_WINDOW_POLICY,
+        window_definition=make_window_definition(int(args.train_window_years)),
+    )
+    scored = scored.sort_values(["race_id", "horse_no"], kind="mergesort")
+
+    valid_sub = scored[scored["p_top3"].notna() & scored["y_top3"].notna()].copy()
+    if valid_sub.empty:
+        return scored, None
+
+    metrics = compute_binary_metrics(
+        valid_sub["y_top3"].to_numpy(dtype=int),
+        valid_sub["p_top3"].to_numpy(dtype=float),
+        n_bins=10,
+    )
+    return scored, {
+        "rows": int(len(scored)),
+        "races": int(scored["race_id"].nunique()),
+        "years": sorted(scored["valid_year"].astype(int).unique().tolist()),
+        "top3_logloss": metrics["logloss"],
+        "top3_brier": metrics["brier"],
+        "top3_auc": metrics["auc"],
+        "top3_ece": metrics["ece"],
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -789,16 +1051,12 @@ def main(argv: list[str] | None = None) -> int:
     _validate_args(args)
 
     features_path = resolve_path(args.features_input)
-    oof_output = resolve_path(args.oof_output)
-    wide_oof_output = resolve_path(args.wide_oof_output)
-    metrics_output = resolve_path(args.metrics_output)
-    model_output = resolve_path(args.model_output)
-    all_years_model_output = resolve_path(args.all_years_model_output)
-    meta_output = resolve_path(args.meta_output)
+    holdout_input_path = resolve_path(args.holdout_input) if args.holdout_input else None
+    outputs = _resolve_output_paths(args)
     operational_mode = _operational_mode(bool(args.include_final_odds_features))
 
     base = _prep_base_frame(features_path)
-    merged, required_pred_cols = _merge_prediction_features(args, base)
+    merged, required_pred_cols, pred_input_paths, cal_cols = _merge_prediction_features(args, base)
     if not required_pred_cols:
         raise SystemExit("No required OOF prediction columns found for PL.")
 
@@ -808,6 +1066,7 @@ def main(argv: list[str] | None = None) -> int:
 
     pl_feature_cols = _collect_pl_feature_columns(
         merged,
+        feature_profile=str(args.pl_feature_profile),
         required_pred_cols=required_pred_cols,
         include_final_odds=bool(args.include_final_odds_features),
         operational_mode=operational_mode,
@@ -857,11 +1116,11 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # --- OOF 保存 ---
-    oof_output.parent.mkdir(parents=True, exist_ok=True)
-    oof.to_parquet(oof_output, index=False)
+    outputs["oof"].parent.mkdir(parents=True, exist_ok=True)
+    oof.to_parquet(outputs["oof"], index=False)
 
     if bool(args.emit_wide_oof):
-        wide_oof_output.parent.mkdir(parents=True, exist_ok=True)
+        outputs["wide_oof"].parent.mkdir(parents=True, exist_ok=True)
         wide_oof = (
             pd.concat(wide_oof_list, axis=0, ignore_index=True)
             if wide_oof_list
@@ -883,13 +1142,14 @@ def main(argv: list[str] | None = None) -> int:
                 ]
             )
         )
-        wide_oof.to_parquet(wide_oof_output, index=False)
+        wide_oof.to_parquet(outputs["wide_oof"], index=False)
 
     # --- 最終モデル学習 ---
     artifact_recent, artifact_all, recent_df, all_df = _train_pl_final_models(
         eligible=eligible,
         years=years,
         pl_feature_cols=pl_feature_cols,
+        required_pred_cols=required_pred_cols,
         args=args,
         cv_policy=build_cv_policy_payload(
             folds,
@@ -899,10 +1159,40 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
 
-    model_output.parent.mkdir(parents=True, exist_ok=True)
-    all_years_model_output.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(artifact_recent, model_output)
-    joblib.dump(artifact_all, all_years_model_output)
+    holdout_summary: dict[str, Any] | None = None
+    if holdout_input_path is not None:
+        holdout_base = _prep_holdout_frame(holdout_input_path)
+        holdout_base = holdout_base[holdout_base["year"] >= int(args.holdout_year)].copy()
+        if not holdout_base.empty:
+            holdout_merged, holdout_required_cols = _merge_holdout_prediction_features(
+                args,
+                holdout_base,
+            )
+            missing_holdout = [
+                col for col in holdout_required_cols if col not in holdout_merged.columns
+            ]
+            if missing_holdout:
+                raise SystemExit(f"Missing required holdout columns after merge: {missing_holdout}")
+            for col in holdout_required_cols:
+                holdout_merged[col] = pd.to_numeric(holdout_merged[col], errors="coerce")
+            holdout_eligible = holdout_merged[
+                holdout_merged[holdout_required_cols].notna().all(axis=1)
+            ].copy()
+            if holdout_eligible.empty:
+                raise SystemExit("No eligible rows for PL holdout scoring after prediction merge.")
+            holdout_scored, holdout_summary = _score_holdout_predictions(
+                holdout_eligible,
+                artifact=artifact_recent,
+                required_pred_cols=holdout_required_cols,
+                args=args,
+            )
+            outputs["holdout"].parent.mkdir(parents=True, exist_ok=True)
+            holdout_scored.to_parquet(outputs["holdout"], index=False)
+
+    outputs["model"].parent.mkdir(parents=True, exist_ok=True)
+    outputs["all_years_model"].parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(artifact_recent, outputs["model"])
+    joblib.dump(artifact_all, outputs["all_years_model"])
 
     # --- メトリクス / メタ保存 ---
     metrics_payload = _build_pl_metrics_payload(
@@ -914,34 +1204,47 @@ def main(argv: list[str] | None = None) -> int:
         required_pred_cols=required_pred_cols,
         pl_feature_cols=pl_feature_cols,
         args=args,
+        holdout_summary=holdout_summary,
     )
-    save_json(metrics_output, metrics_payload)
+    save_json(outputs["metrics"], metrics_payload)
+
+    input_paths: dict[str, str] = {
+        **{key: str(path) for key, path in pred_input_paths.items()},
+        "odds_cal_oof": str(resolve_path(args.odds_cal_oof)) if cal_cols else None,
+        "holdout_input": str(holdout_input_path) if holdout_input_path is not None else None,
+    }
+    input_paths = {key: value for key, value in input_paths.items() if value is not None}
 
     meta_payload = _build_pl_meta_payload(
         args=args,
         folds=folds,
         features_path=features_path,
-        oof_output=oof_output,
-        wide_oof_output=wide_oof_output,
-        metrics_output=metrics_output,
-        model_output=model_output,
-        all_years_model_output=all_years_model_output,
+        oof_output=outputs["oof"],
+        wide_oof_output=outputs["wide_oof"],
+        metrics_output=outputs["metrics"],
+        model_output=outputs["model"],
+        all_years_model_output=outputs["all_years_model"],
+        holdout_output=outputs["holdout"],
         required_pred_cols=required_pred_cols,
         pl_feature_cols=pl_feature_cols,
         cv_summary=metrics_payload["summary"],
         recent_df=recent_df,
         all_df=all_df,
         years=years,
+        input_paths=input_paths,
+        holdout_summary=holdout_summary,
     )
-    save_json(meta_output, meta_payload)
+    save_json(outputs["meta"], meta_payload)
 
-    logger.info("wrote %s", oof_output)
+    logger.info("wrote %s", outputs["oof"])
     if bool(args.emit_wide_oof):
-        logger.info("wrote %s", wide_oof_output)
-    logger.info("wrote %s", metrics_output)
-    logger.info("wrote %s", model_output)
-    logger.info("wrote %s", all_years_model_output)
-    logger.info("wrote %s", meta_output)
+        logger.info("wrote %s", outputs["wide_oof"])
+    if holdout_input_path is not None:
+        logger.info("wrote %s", outputs["holdout"])
+    logger.info("wrote %s", outputs["metrics"])
+    logger.info("wrote %s", outputs["model"])
+    logger.info("wrote %s", outputs["all_years_model"])
+    logger.info("wrote %s", outputs["meta"])
     return 0
 
 

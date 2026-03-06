@@ -6,9 +6,13 @@ import pytest
 from scripts_v3.feature_registry_v3 import (
     BINARY_ENTITY_ID_FEATURES,
     FORBIDDEN_FINAL_ODDS_FEATURES,
+    PL_META_DEFAULT_ODDS_FEATURES,
     PL_REQUIRED_PRED_FEATURES,
+    PL_REQUIRED_PRED_FEATURES_META,
+    PL_REQUIRED_PRED_FEATURES_RAW_LEGACY,
     get_binary_feature_columns,
     get_pl_feature_columns,
+    get_pl_required_pred_columns,
     validate_feature_contract,
 )
 
@@ -86,6 +90,8 @@ def _sample_frame() -> pd.DataFrame:
                 "p_place_lgbm": 0.25,
                 "p_place_xgb": 0.26,
                 "p_place_cat": 0.27,
+                "p_win_meta": 0.131,
+                "p_place_meta": 0.261,
                 "extra_numeric_probe": 999.0,
             }
         ]
@@ -102,6 +108,7 @@ def test_registry_functions_return_unique_columns() -> None:
     )
     pl_cols = get_pl_feature_columns(
         frame,
+        feature_profile="raw_legacy",
         required_pred_cols=[*PL_REQUIRED_PRED_FEATURES, "p_win_lgbm"],
         include_context=True,
         include_final_odds=False,
@@ -112,6 +119,23 @@ def test_registry_functions_return_unique_columns() -> None:
     assert len(pl_cols) == len(set(pl_cols))
     assert all(col not in binary_cols for col in BINARY_ENTITY_ID_FEATURES)
     assert "extra_numeric_probe" not in pl_cols
+
+
+def test_meta_default_required_pred_columns_are_compact() -> None:
+    required = get_pl_required_pred_columns("meta_default")
+    assert required == [*PL_REQUIRED_PRED_FEATURES_META, *PL_META_DEFAULT_ODDS_FEATURES]
+
+
+def test_raw_legacy_required_pred_columns_can_append_calibrated_odds() -> None:
+    required = get_pl_required_pred_columns(
+        "raw_legacy",
+        odds_cal_cols=["p_win_odds_t10_norm_cal_isotonic"],
+        include_calibrated_odds_features=True,
+    )
+    assert required == [
+        *PL_REQUIRED_PRED_FEATURES_RAW_LEGACY,
+        "p_win_odds_t10_norm_cal_isotonic",
+    ]
 
 
 def test_validate_feature_contract_raises_on_forbidden_columns() -> None:

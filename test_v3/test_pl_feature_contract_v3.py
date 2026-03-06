@@ -9,13 +9,16 @@ from scripts_v3.cv_policy_v3 import FoldSpec
 from scripts_v3.feature_registry_v3 import (
     FINAL_ODDS_BASE_FEATURES,
     PL_CONTEXT_FEATURES_SMALL,
-    PL_REQUIRED_PRED_FEATURES,
+    PL_META_DEFAULT_ODDS_FEATURES,
+    PL_REQUIRED_PRED_FEATURES_META,
+    PL_REQUIRED_PRED_FEATURES_RAW_LEGACY,
     PL_T10_ODDS_FEATURES,
 )
 from scripts_v3.train_pl_v3 import (
     _artifact_from_fit,
     _build_pl_meta_payload,
     _collect_pl_feature_columns,
+    _resolve_output_paths,
     parse_args,
 )
 
@@ -50,6 +53,8 @@ def _sample_frame() -> pd.DataFrame:
                 "p_place_lgbm": 0.25,
                 "p_place_xgb": 0.26,
                 "p_place_cat": 0.27,
+                "p_win_meta": 0.131,
+                "p_place_meta": 0.261,
                 "p_win_odds_t10_norm_cal_isotonic": 0.19,
                 "jockey_key": 1001,
                 "trainer_key": 2001,
@@ -60,17 +65,18 @@ def _sample_frame() -> pd.DataFrame:
     )
 
 
-def test_pl_default_contract_is_required_preds_plus_t10_and_small_context() -> None:
-    required_pred_cols = [*PL_REQUIRED_PRED_FEATURES, "p_win_odds_t10_norm_cal_isotonic"]
+def test_pl_meta_default_contract_is_compact() -> None:
+    required_pred_cols = [*PL_REQUIRED_PRED_FEATURES_META, *PL_META_DEFAULT_ODDS_FEATURES]
     feat_cols = _collect_pl_feature_columns(
         _sample_frame(),
+        feature_profile="meta_default",
         required_pred_cols=required_pred_cols,
         include_final_odds=False,
         operational_mode="t10_only",
     )
 
     assert feat_cols[: len(required_pred_cols)] == required_pred_cols
-    assert all(col in feat_cols for col in PL_T10_ODDS_FEATURES)
+    assert all(col not in feat_cols for col in PL_T10_ODDS_FEATURES if col != "p_win_odds_t10_norm")
     assert all(col in feat_cols for col in PL_CONTEXT_FEATURES_SMALL)
     assert all(col not in feat_cols for col in FINAL_ODDS_BASE_FEATURES)
     assert "extra_numeric_probe" not in feat_cols
@@ -79,10 +85,11 @@ def test_pl_default_contract_is_required_preds_plus_t10_and_small_context() -> N
     assert "finish_pos" not in feat_cols
 
 
-def test_pl_can_include_final_odds_only_when_requested() -> None:
+def test_pl_raw_legacy_can_include_final_odds_only_when_requested() -> None:
     feat_cols = _collect_pl_feature_columns(
         _sample_frame(),
-        required_pred_cols=PL_REQUIRED_PRED_FEATURES,
+        feature_profile="raw_legacy",
+        required_pred_cols=PL_REQUIRED_PRED_FEATURES_RAW_LEGACY,
         include_final_odds=True,
         operational_mode="includes_final",
     )
@@ -96,13 +103,15 @@ def test_pl_extra_numeric_columns_do_not_expand_feature_list() -> None:
 
     base_cols = _collect_pl_feature_columns(
         frame,
-        required_pred_cols=PL_REQUIRED_PRED_FEATURES,
+        feature_profile="raw_legacy",
+        required_pred_cols=PL_REQUIRED_PRED_FEATURES_RAW_LEGACY,
         include_final_odds=False,
         operational_mode="t10_only",
     )
     extra_cols = _collect_pl_feature_columns(
         with_extra,
-        required_pred_cols=PL_REQUIRED_PRED_FEATURES,
+        feature_profile="raw_legacy",
+        required_pred_cols=PL_REQUIRED_PRED_FEATURES_RAW_LEGACY,
         include_final_odds=False,
         operational_mode="t10_only",
     )
@@ -115,7 +124,8 @@ def test_pl_artifact_and_meta_include_cv_policy() -> None:
     folds = [FoldSpec(fold_id=1, train_years=(2020, 2021, 2022, 2023), valid_year=2024)]
     feature_cols = _collect_pl_feature_columns(
         _sample_frame(),
-        required_pred_cols=PL_REQUIRED_PRED_FEATURES,
+        feature_profile="meta_default",
+        required_pred_cols=[*PL_REQUIRED_PRED_FEATURES_META, *PL_META_DEFAULT_ODDS_FEATURES],
         include_final_odds=False,
         operational_mode="t10_only",
     )
@@ -131,6 +141,7 @@ def test_pl_artifact_and_meta_include_cv_policy() -> None:
         train_years=[2021, 2022, 2023, 2024],
         train_rows=10,
         train_races=2,
+        required_pred_cols=[*PL_REQUIRED_PRED_FEATURES_META, *PL_META_DEFAULT_ODDS_FEATURES],
     )
     meta = _build_pl_meta_payload(
         args=args,
@@ -141,19 +152,37 @@ def test_pl_artifact_and_meta_include_cv_policy() -> None:
         metrics_output=Path("data/oof/pl_v3_cv_metrics.json"),
         model_output=Path("models/pl_v3_recent_window.joblib"),
         all_years_model_output=Path("models/pl_v3_all_years.joblib"),
-        required_pred_cols=list(PL_REQUIRED_PRED_FEATURES),
+        holdout_output=Path("data/oof/pl_v3_holdout_2025_pred.parquet"),
+        required_pred_cols=[*PL_REQUIRED_PRED_FEATURES_META, *PL_META_DEFAULT_ODDS_FEATURES],
         pl_feature_cols=feature_cols,
         cv_summary={},
         recent_df=_sample_frame().assign(year=2024),
         all_df=_sample_frame().assign(year=2024),
         years=[2024],
+        input_paths={"win_meta_oof": "data/oof/win_meta_oof.parquet"},
+        holdout_summary=None,
     )
 
     assert artifact["cv_policy"]["cv_window_policy"] == "fixed_sliding"
     assert artifact["cv_policy"]["train_window_years"] == 4
     assert artifact["cv_policy"]["holdout_year"] == 2025
+    assert artifact["pl_feature_profile"] == "meta_default"
+    assert artifact["meta_input_mode"] == "grouped_reference_oof"
+    assert artifact["forbidden_feature_check_passed"] is True
     assert meta["cv_policy"]["valid_years"] == [2024]
+    assert meta["pl_feature_profile"] == "meta_default"
+    assert meta["meta_input_mode"] == "grouped_reference_oof"
+    assert meta["forbidden_feature_check_passed"] is True
     assert (
         meta["cv_policy"]["window_definition"]
         == "train = previous 4 years only, valid = current year"
     )
+
+
+def test_raw_legacy_suffix_paths_are_applied() -> None:
+    args = parse_args(["--pl-feature-profile", "raw_legacy"])
+    outputs = _resolve_output_paths(args)
+    assert args.pl_feature_profile == "raw_legacy"
+    assert str(outputs["oof"]).endswith("pl_v3_oof_raw_legacy.parquet")
+    assert str(outputs["metrics"]).endswith("pl_v3_cv_metrics_raw_legacy.json")
+    assert str(outputs["holdout"]).endswith("pl_v3_holdout_2025_pred_raw_legacy.parquet")

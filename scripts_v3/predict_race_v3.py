@@ -54,6 +54,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--odds-calibrator", default="models/odds_win_calibrators_v3.pkl")
     parser.add_argument("--win-metas", default=",".join(DEFAULT_WIN_METAS))
     parser.add_argument("--place-metas", default=",".join(DEFAULT_PLACE_METAS))
+    parser.add_argument("--win-meta-model", default="models/win_meta_v3.pkl")
+    parser.add_argument("--place-meta-model", default="models/place_meta_v3.pkl")
     parser.add_argument(
         "--skip-base-model-inference",
         action="store_true",
@@ -198,6 +200,63 @@ def _apply_base_models(
     return out
 
 
+def _predict_with_meta_artifact(
+    frame: pd.DataFrame,
+    *,
+    model_path: Path,
+) -> tuple[str, np.ndarray]:
+    if not model_path.exists():
+        raise SystemExit(f"meta model not found: {model_path}")
+    artifact = joblib.load(model_path)
+    pred_col = str(artifact.get("pred_col", ""))
+    feature_cols = list(map(str, artifact.get("feature_columns", [])))
+    model = artifact.get("model")
+    preprocess = artifact.get("preprocess", {})
+    if not pred_col:
+        raise SystemExit(f"pred_col missing in meta model artifact: {model_path}")
+    if not feature_cols:
+        raise SystemExit(f"feature_columns missing in meta model artifact: {model_path}")
+    if model is None:
+        raise SystemExit(f"model missing in meta model artifact: {model_path}")
+    if preprocess.get("type") not in {None, "identity"}:
+        raise SystemExit(f"Unsupported meta preprocess in {model_path}: {preprocess}")
+
+    missing = [col for col in feature_cols if col not in frame.columns]
+    if missing:
+        raise SystemExit(f"Input missing meta model features for {model_path.name}: {missing[:10]}")
+
+    x = coerce_feature_matrix(frame, feature_cols).to_numpy(dtype=float)
+    pred = model.predict_proba(x)[:, 1]
+    pred = np.asarray(pred, dtype=float)
+    pred = np.clip(pred, 1e-8, 1.0 - 1e-8)
+    return pred_col, pred
+
+
+def _infer_pl_feature_profile(artifact: dict[str, Any]) -> str:
+    profile = str(artifact.get("pl_feature_profile", "")).strip()
+    if profile in {"meta_default", "raw_legacy"}:
+        return profile
+    feature_cols = set(map(str, artifact.get("feature_columns", [])))
+    if {"p_win_meta", "p_place_meta"} & feature_cols:
+        return "meta_default"
+    return "raw_legacy"
+
+
+def _apply_meta_models(
+    frame: pd.DataFrame,
+    *,
+    win_meta_model: Path,
+    place_meta_model: Path,
+) -> pd.DataFrame:
+    out = frame.copy()
+    for model_path in (win_meta_model, place_meta_model):
+        pred_col, pred = _predict_with_meta_artifact(out, model_path=model_path)
+        if pred_col in out.columns:
+            continue
+        out[pred_col] = pred
+    return out
+
+
 def _predict_calibrator(model: Any, method: str, x: np.ndarray) -> np.ndarray:
     if isinstance(model, dict):
         return np.full(len(x), float(model.get("constant_prob", 0.0)), dtype=float)
@@ -310,6 +369,13 @@ def main(argv: list[str] | None = None) -> int:
     odds_cal_path = resolve_path(args.odds_calibrator)
     win_meta_paths = [resolve_path(path) for path in _parse_csv(args.win_metas)]
     place_meta_paths = [resolve_path(path) for path in _parse_csv(args.place_metas)]
+    win_meta_model_path = resolve_path(args.win_meta_model)
+    place_meta_model_path = resolve_path(args.place_meta_model)
+
+    if not pl_model_path.exists():
+        raise SystemExit(f"pl model not found: {pl_model_path}")
+    artifact = joblib.load(pl_model_path)
+    pl_feature_profile = _infer_pl_feature_profile(artifact)
 
     frame = _load_input(input_path)
     assert_t10_no_future_reference(frame)
@@ -321,10 +387,15 @@ def main(argv: list[str] | None = None) -> int:
             place_meta_paths=place_meta_paths,
         )
     frame = _apply_odds_calibrators(frame, model_path=odds_cal_path)
+    if pl_feature_profile == "meta_default":
+        needs_meta = any(col not in frame.columns for col in ("p_win_meta", "p_place_meta"))
+        if needs_meta:
+            frame = _apply_meta_models(
+                frame,
+                win_meta_model=win_meta_model_path,
+                place_meta_model=place_meta_model_path,
+            )
 
-    if not pl_model_path.exists():
-        raise SystemExit(f"pl model not found: {pl_model_path}")
-    artifact = joblib.load(pl_model_path)
     scored = _score_with_pl(frame, artifact)
 
     p_top3 = estimate_p_top3_by_race(
@@ -358,6 +429,8 @@ def main(argv: list[str] | None = None) -> int:
             "p_place_lgbm",
             "p_place_xgb",
             "p_place_cat",
+            "p_win_meta",
+            "p_place_meta",
             "pl_score",
             "p_top3",
             "valid_year",

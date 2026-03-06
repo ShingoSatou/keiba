@@ -40,6 +40,8 @@ uv run python scripts_v2/load_to_db.py --input-dir data/
 - 運用手順: `docs/ops_v3/スクリプトリファレンス.md`
 - 推定前提: `docs/ops_v3/Assumptions.md`
 - 実行結果: `docs/ops_v3/v3_run_report_*.md`
+- default PL contract は `meta_default`（`p_win_meta`, `p_place_meta`, `p_win_odds_t10_norm`, `PL_CONTEXT_FEATURES_SMALL`）
+- v3 の実行順と canonical CLI は `docs/ops_v3/スクリプトリファレンス.md` を source of truth とする
 
 ## v1について（参照専用）
 
