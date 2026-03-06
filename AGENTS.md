@@ -22,8 +22,18 @@
 
 ### 作業前の確認ルール
 - v3 の実装・変更を行う場合は、毎回以下を確認すること。
-  - `docs/specs_v3/v3_実装仕様.md`
+  - `docs/specs_v3/v3_システム仕様書.md`
+  - `docs/specs_v3/` 内の対象作業に対応する詳細仕様書
   - `docs/ops_v3/`
+- v3 の仕様書確認は、以下の台帳に従うこと。
+
+| 作業内容 | 主に確認する仕様書 | あわせて確認する運用文書 |
+|---|---|---|
+| 全体構成、影響範囲判断、責務分割 | `docs/specs_v3/v3_システム仕様書.md`, `docs/specs_v3/v3_01_全体アーキテクチャ.md` | `docs/ops_v3/Assumptions.md` |
+| 特徴量生成、odds snapshot、features table 列定義 | `docs/specs_v3/v3_02_特徴量生成とオッズ仕様.md` | `docs/ops_v3/Assumptions.md`, `docs/ops_v3/スクリプトリファレンス.md` |
+| binary 学習、feature registry、Benter R*、odds 校正 | `docs/specs_v3/v3_03_二値分類と校正仕様.md` | `docs/ops_v3/Assumptions.md`, `docs/ops_v3/スクリプトリファレンス.md`, `docs/ops_v3/v3_run_report_*.md` |
+| PL 学習、1レース推論、wide backtest | `docs/specs_v3/v3_04_PL推論とワイドバックテスト仕様.md` | `docs/ops_v3/Assumptions.md`, `docs/ops_v3/スクリプトリファレンス.md`, `docs/ops_v3/v3_run_report_*.md` |
+| 共通 utility、CV、テスト、依存関係、CLI | `docs/specs_v3/v3_05_共通基盤と付録.md` | `docs/ops_v3/スクリプトリファレンス.md` |
 - v2 を触る場合は、毎回以下を確認すること。
   - `docs/specs_v2/競馬予測システム 課題設定・要件定義書.md`
   - 必要箇所のみの確認でよい
@@ -139,7 +149,7 @@
 - 備考: PL 学習の torch は optional
 - 特徴量生成: `uv run python scripts_v3/build_features_v3.py`
 - 学習 / 評価の入口: `docs/ops_v3/スクリプトリファレンス.md`
-- 実行結果レポート: `docs/ops_v3/v3_run_report_2026-03-04.md`
+- 実行結果レポート: `docs/ops_v3/v3_run_report_*.md`
 
 ### 実行ルール
 - ad-hoc なコマンドより、まず既存スクリプトや docs で定義された入口を優先する。
@@ -148,7 +158,7 @@
 ---
 
 ## 8. v3 実装ルール
-- v3 の変更時は、毎回 `docs/specs_v3/v3_実装仕様.md` を基準とする。
+- v3 の変更時は、毎回 `docs/specs_v3/v3_システム仕様書.md` を入口にし、対象作業に対応する分割仕様書を基準とする。
 - 学習・評価・特徴量生成・レポート出力は、`docs/ops_v3/` の運用に合わせる。
 - 既存仕様との差異が出る場合は、コードだけ先に直さず、仕様差分を明示する。
 - v2 由来の以下の原則を守る。
@@ -213,15 +223,21 @@
 ---
 
 ## 13. タスク管理
-- 複数ステップの作業では、`tasks/todo.md` を管理に使う。最低限、以下を記録する。
+- 複数ステップの作業では、`tasks/todo.md` を台帳として使う。
+- `tasks/todo.md` には task の要約とリンクだけを書き、1画面で見渡せる分量を維持する。
+- 実際の作業内容は 1 task = 1 file で管理し、新規 task は `tasks/templates/task.md` を元に `tasks/active/` へ作成する。
+- task file には最低限、以下を記録する。
   - 対象範囲
   - 対象バージョン（v2 / v3）
   - 前提・仮定
   - チェックリスト
   - 確認結果
+  - 実行コマンド
   - 残リスク
+- task 完了後は `tasks/done/YYYY/` へ移動し、`tasks/todo.md` の台帳リンクを更新する。
+- 同じテーマでも完了基準が異なるなら別 task file に分ける。
 - ユーザーからの修正指摘や、同じミスの再発があった場合は、`tasks/lessons.md` に短い再発防止ルールを追記する。
-- 関連作業に着手する前に、必要に応じて `tasks/lessons.md` を見直す。
+- 関連作業に着手する前に、必要に応じて `tasks/todo.md` と `tasks/lessons.md` を見直す。
 
 ---
 

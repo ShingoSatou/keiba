@@ -16,6 +16,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts_v3.feature_registry_v3 import (  # noqa: E402
+    PL_REQUIRED_PRED_FEATURES,
+    get_pl_feature_columns,
+)
 from scripts_v3.pl_v3_common import (  # noqa: E402
     PLTrainConfig,
     build_group_indices,
@@ -43,43 +47,6 @@ DEFAULT_LR = 0.05
 DEFAULT_L2 = 1e-5
 DEFAULT_SEED = 42
 DEFAULT_MC_SAMPLES = 10_000
-
-WIN_MODEL_KEYS = ("lgbm", "xgb", "cat")
-PLACE_MODEL_KEYS = ("lgbm", "xgb", "cat")
-
-ODDS_T10_BASE_COLS = [
-    "odds_win_t10",
-    "odds_t10_data_kbn",
-    "p_win_odds_t10_raw",
-    "p_win_odds_t10_norm",
-]
-ODDS_FINAL_BASE_COLS = [
-    "odds_win_final",
-    "odds_final_data_kbn",
-    "p_win_odds_final_raw",
-    "p_win_odds_final_norm",
-]
-
-DROP_FEATURE_COLS = {
-    "race_id",
-    "horse_id",
-    "horse_no",
-    "race_date",
-    "t_race",
-    "year",
-    "target_label",
-    "y_win",
-    "y_place",
-    "y_top3",
-    "finish_pos",
-    "fold_id",
-    "valid_year",
-    "pl_score",
-    "p_top3",
-    "odds_final_announce_dt",
-    "odds_t10_announce_dt",
-    "odds_t10_asof_dt",
-}
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -150,6 +117,21 @@ def _validate_args(args: argparse.Namespace) -> None:
 
 def _parse_csv(raw: str) -> list[str]:
     return [token.strip() for token in str(raw).split(",") if token.strip()]
+
+
+def _dedupe_preserve_order(cols: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for col in cols:
+        if col in seen:
+            continue
+        seen.add(col)
+        deduped.append(col)
+    return deduped
+
+
+def _operational_mode(include_final_odds_features: bool) -> str:
+    return "includes_final" if bool(include_final_odds_features) else "t10_only"
 
 
 def _prep_base_frame(features_path: Path) -> pd.DataFrame:
@@ -260,7 +242,6 @@ def _merge_prediction_features(
     frame: pd.DataFrame,
 ) -> tuple[pd.DataFrame, list[str]]:
     merged = frame.copy()
-    required_pred_cols: list[str] = []
 
     win_paths = {
         "lgbm": resolve_path(args.win_lgbm_oof),
@@ -272,29 +253,28 @@ def _merge_prediction_features(
         "xgb": resolve_path(args.place_xgb_oof),
         "cat": resolve_path(args.place_cat_oof),
     }
+    pred_paths = {
+        "p_win_lgbm": win_paths["lgbm"],
+        "p_win_xgb": win_paths["xgb"],
+        "p_win_cat": win_paths["cat"],
+        "p_place_lgbm": place_paths["lgbm"],
+        "p_place_xgb": place_paths["xgb"],
+        "p_place_cat": place_paths["cat"],
+    }
 
-    for model in WIN_MODEL_KEYS:
-        pred_col = f"p_win_{model}"
-        pred_df = _load_single_oof_prediction(win_paths[model], pred_col)
+    for pred_col in PL_REQUIRED_PRED_FEATURES:
+        pred_df = _load_single_oof_prediction(pred_paths[pred_col], pred_col)
         merged = merged.merge(pred_df, on=["race_id", "horse_no"], how="left")
-        required_pred_cols.append(pred_col)
-
-    for model in PLACE_MODEL_KEYS:
-        pred_col = f"p_place_{model}"
-        pred_df = _load_single_oof_prediction(place_paths[model], pred_col)
-        merged = merged.merge(pred_df, on=["race_id", "horse_no"], how="left")
-        required_pred_cols.append(pred_col)
 
     cal_cols_hint = _parse_csv(args.odds_cal_cols)
     cal_df, cal_cols = _load_odds_calibration_oof(resolve_path(args.odds_cal_oof), cal_cols_hint)
     if cal_cols:
         merged = merged.merge(cal_df, on=["race_id", "horse_no"], how="left")
-        for col in cal_cols:
-            if "_t10_" in col or bool(args.include_final_odds_features):
-                required_pred_cols.append(col)
-
-    required_pred_cols = sorted(set(required_pred_cols))
-    return merged, required_pred_cols
+    required_pred_cols = [col for col in PL_REQUIRED_PRED_FEATURES if col in merged.columns]
+    for col in sorted(cal_cols):
+        if "_t10_" in col or bool(args.include_final_odds_features):
+            required_pred_cols.append(col)
+    return merged, _dedupe_preserve_order(required_pred_cols)
 
 
 def _collect_pl_feature_columns(
@@ -302,43 +282,15 @@ def _collect_pl_feature_columns(
     *,
     required_pred_cols: list[str],
     include_final_odds: bool,
+    operational_mode: str,
 ) -> list[str]:
-    cols: list[str] = []
-
-    for col in required_pred_cols:
-        if col in frame.columns:
-            cols.append(col)
-
-    for col in ODDS_T10_BASE_COLS:
-        if col in frame.columns:
-            cols.append(col)
-
-    if include_final_odds:
-        for col in ODDS_FINAL_BASE_COLS:
-            if col in frame.columns:
-                cols.append(col)
-
-    for col in frame.columns:
-        if col in cols:
-            continue
-        if col in DROP_FEATURE_COLS:
-            continue
-        if col in ODDS_FINAL_BASE_COLS and not include_final_odds:
-            continue
-        if "_final_" in col and "_cal_" in col and not include_final_odds:
-            continue
-        if not pd.api.types.is_numeric_dtype(frame[col]):
-            continue
-        cols.append(col)
-
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for col in cols:
-        if col in seen:
-            continue
-        seen.add(col)
-        deduped.append(col)
-    return deduped
+    return get_pl_feature_columns(
+        frame,
+        required_pred_cols=required_pred_cols,
+        include_context=True,
+        include_final_odds=include_final_odds,
+        operational_mode=operational_mode,
+    )
 
 
 def _build_matrix_with_stats(
@@ -452,9 +404,7 @@ def _artifact_from_fit(
             "mc_samples_default": int(args.mc_samples),
             "top_k": 3,
         },
-        "operational_mode": (
-            "t10_only" if not bool(args.include_final_odds_features) else "includes_final"
-        ),
+        "operational_mode": _operational_mode(bool(args.include_final_odds_features)),
         "train_summary": {
             "years": list(map(int, train_years)),
             "rows": int(train_rows),
@@ -696,6 +646,7 @@ def _build_pl_metrics_payload(
             "l2": float(args.l2),
             "seed": int(args.seed),
             "mc_samples": int(args.mc_samples),
+            "operational_mode": _operational_mode(bool(args.include_final_odds_features)),
             "include_final_odds_features": bool(args.include_final_odds_features),
         },
         "data_summary": {
@@ -733,6 +684,7 @@ def _build_pl_meta_payload(
     return {
         "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "holdout_rule": f"exclude year >= {args.holdout_year}",
+        "operational_mode": _operational_mode(bool(args.include_final_odds_features)),
         "input_paths": {
             "features_v3": str(features_path),
             "win_lgbm_oof": str(resolve_path(args.win_lgbm_oof)),
@@ -759,7 +711,13 @@ def _build_pl_meta_payload(
             "all_years_model_years": years,
             "all_years_model_rows": int(len(all_df)),
         },
-        "code_hash": hash_files([Path(__file__), Path(resolve_path("scripts_v3/pl_v3_common.py"))]),
+        "code_hash": hash_files(
+            [
+                Path(__file__),
+                Path(resolve_path("scripts_v3/pl_v3_common.py")),
+                Path(resolve_path("scripts_v3/feature_registry_v3.py")),
+            ]
+        ),
     }
 
 
@@ -775,6 +733,7 @@ def main(argv: list[str] | None = None) -> int:
     model_output = resolve_path(args.model_output)
     all_years_model_output = resolve_path(args.all_years_model_output)
     meta_output = resolve_path(args.meta_output)
+    operational_mode = _operational_mode(bool(args.include_final_odds_features))
 
     base = _prep_base_frame(features_path)
     merged, required_pred_cols = _merge_prediction_features(args, base)
@@ -789,6 +748,7 @@ def main(argv: list[str] | None = None) -> int:
         merged,
         required_pred_cols=required_pred_cols,
         include_final_odds=bool(args.include_final_odds_features),
+        operational_mode=operational_mode,
     )
     if not pl_feature_cols:
         raise SystemExit("No PL feature columns available.")

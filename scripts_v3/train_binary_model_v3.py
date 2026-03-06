@@ -15,6 +15,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts_v3.feature_registry_v3 import (  # noqa: E402
+    BINARY_ENTITY_ID_FEATURES,
+    FEATURE_MANIFEST_VERSION,
+    OPERATIONAL_MODE_CHOICES,
+    get_binary_feature_columns,
+    validate_feature_contract,
+)
 from scripts_v3.metrics_benter_v3_common import (  # noqa: E402
     benter_nll_and_null,
     benter_r2,
@@ -27,7 +34,6 @@ from scripts_v3.train_binary_v3_common import (  # noqa: E402
     build_rolling_year_folds,
     coerce_feature_matrix,
     compute_binary_metrics,
-    feature_columns,
     fold_integrity,
     hash_files,
     prepare_binary_frame,
@@ -45,7 +51,6 @@ DEFAULT_SEED = 42
 
 TASK_CHOICES = ("win", "place")
 MODEL_CHOICES = ("lgbm", "xgb", "cat")
-ENTITY_ID_FEATURES = {"jockey_key", "trainer_key"}
 
 
 def _label_col(task: str) -> str:
@@ -90,7 +95,23 @@ def parse_args(
     parser.add_argument("--early-stopping-rounds", type=int, default=DEFAULT_EARLY_STOPPING_ROUNDS)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--n-bins", type=int, default=10)
-    parser.add_argument("--drop-entity-id-features", action="store_true")
+    parser.add_argument(
+        "--operational-mode",
+        choices=list(OPERATIONAL_MODE_CHOICES),
+        default="t10_only",
+        help="Feature contract profile. Default is t10_only; includes_final is validation-only.",
+    )
+    parser.add_argument(
+        "--include-entity-id-features",
+        action="store_true",
+        help="Opt in to raw entity ID features (jockey_key/trainer_key). Default is OFF.",
+    )
+    parser.add_argument(
+        "--drop-entity-id-features",
+        action="store_true",
+        help="Deprecated: entity ID features are excluded by default. "
+        "Use --include-entity-id-features to opt in.",
+    )
 
     parser.add_argument("--learning-rate", type=float, default=0.05)
 
@@ -136,12 +157,19 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--n-bins must be > 1")
     if not (0.0 < float(args.benter_eps) < 0.5):
         raise SystemExit("--benter-eps must be in (0, 0.5)")
+    if bool(args.include_entity_id_features) and bool(args.drop_entity_id_features):
+        raise SystemExit(
+            "--include-entity-id-features and --drop-entity-id-features cannot be used together"
+        )
 
 
-def _drop_entity_features(cols: list[str], enabled: bool) -> list[str]:
-    if not enabled:
-        return cols
-    return [c for c in cols if c not in ENTITY_ID_FEATURES]
+def _include_entity_id_features(args: argparse.Namespace) -> bool:
+    if bool(args.drop_entity_id_features):
+        logger.warning(
+            "--drop-entity-id-features is deprecated; entity IDs are already excluded by default."
+        )
+        return False
+    return bool(args.include_entity_id_features)
 
 
 def _resolve_output_paths(args: argparse.Namespace) -> dict[str, Path]:
@@ -154,6 +182,7 @@ def _resolve_output_paths(args: argparse.Namespace) -> dict[str, Path]:
         "model": f"models/{task}_{model}_v3.{ext}",
         "all_years_model": f"models/{task}_{model}_all_years_v3.{ext}",
         "meta": f"models/{task}_{model}_bundle_meta_v3.json",
+        "feature_manifest": f"models/{task}_{model}_feature_manifest_v3.json",
         "holdout": f"data/holdout/{task}_{model}_holdout_pred_v3.parquet",
     }
     return {
@@ -162,6 +191,7 @@ def _resolve_output_paths(args: argparse.Namespace) -> dict[str, Path]:
         "model": resolve_path(args.model_output or defaults["model"]),
         "all_years_model": resolve_path(args.all_years_model_output or defaults["all_years_model"]),
         "meta": resolve_path(args.meta_output or defaults["meta"]),
+        "feature_manifest": resolve_path(defaults["feature_manifest"]),
         "holdout": resolve_path(args.holdout_output or defaults["holdout"]),
     }
 
@@ -479,6 +509,27 @@ def _summary_stats(values: list[float | None]) -> dict[str, float | None]:
     }
 
 
+def _build_feature_manifest_payload(
+    *,
+    args: argparse.Namespace,
+    feat_cols: list[str],
+    categorical_cols: list[str],
+    include_entity_id_features: bool,
+    forbidden_feature_check_passed: bool,
+) -> dict[str, Any]:
+    return {
+        "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "task": str(args.task),
+        "model": str(args.model),
+        "operational_mode": str(args.operational_mode),
+        "include_entity_id_features": bool(include_entity_id_features),
+        "feature_columns": list(feat_cols),
+        "categorical_features": list(categorical_cols),
+        "forbidden_feature_check_passed": bool(forbidden_feature_check_passed),
+        "feature_manifest_version": int(FEATURE_MANIFEST_VERSION),
+    }
+
+
 def _add_benter_for_fold(
     *,
     train_df: pd.DataFrame,
@@ -751,6 +802,7 @@ def _build_metrics_payload(
     args: argparse.Namespace,
     label_col: str,
     pred_col: str,
+    include_entity_id_features: bool,
 ) -> dict[str, Any]:
     """CV メトリクスの集計辞書を組み立てる。"""
     logloss_stats = _summary_stats([m.get("logloss") for m in fold_metrics])
@@ -771,7 +823,8 @@ def _build_metrics_payload(
             "early_stopping_rounds": int(args.early_stopping_rounds),
             "seed": int(args.seed),
             "n_bins": int(args.n_bins),
-            "drop_entity_id_features": bool(args.drop_entity_id_features),
+            "operational_mode": str(args.operational_mode),
+            "include_entity_id_features": bool(include_entity_id_features),
         },
         "data_summary": {
             "rows": int(len(frame)),
@@ -819,6 +872,8 @@ def _build_meta_payload(
     recent_df: pd.DataFrame,
     all_df: pd.DataFrame,
     years: list[int],
+    include_entity_id_features: bool,
+    forbidden_feature_check_passed: bool,
 ) -> dict[str, Any]:
     """モデルバンドルメタ辞書を組み立てる。"""
     recent_years = sorted(recent_df["year"].unique().tolist())
@@ -830,13 +885,18 @@ def _build_meta_payload(
         "pred_col": pred_col,
         "holdout_rule": f"exclude year >= {args.holdout_year}",
         "input_path": str(input_path),
+        "operational_mode": str(args.operational_mode),
+        "include_entity_id_features": bool(include_entity_id_features),
         "feature_columns": feat_cols,
         "categorical_features": categorical_cols,
+        "forbidden_feature_check_passed": bool(forbidden_feature_check_passed),
+        "feature_manifest_version": int(FEATURE_MANIFEST_VERSION),
         "output_paths": {
             "oof": str(outputs["oof"]),
             "cv_metrics": str(outputs["metrics"]),
             "main_model": str(outputs["model"]),
             "all_years_model": str(outputs["all_years_model"]),
+            "feature_manifest": str(outputs["feature_manifest"]),
             "holdout": str(outputs["holdout"]),
         },
         "cv_summary": metrics_summary,
@@ -846,7 +906,12 @@ def _build_meta_payload(
             "all_years_model_years": years,
             "all_years_model_rows": int(len(all_df)),
         },
-        "code_hash": hash_files([Path(__file__)]),
+        "code_hash": hash_files(
+            [
+                Path(__file__),
+                Path(resolve_path("scripts_v3/feature_registry_v3.py")),
+            ]
+        ),
     }
 
 
@@ -882,12 +947,25 @@ def main(
         holdout_year=int(args.holdout_year),
     )
 
-    drop_cols = {label_col}
-    feat_cols = feature_columns(frame, extra_drop=drop_cols)
-    feat_cols = _drop_entity_features(feat_cols, bool(args.drop_entity_id_features))
+    include_entity_id_features = _include_entity_id_features(args)
+    feat_cols = get_binary_feature_columns(
+        frame,
+        include_entity_ids=include_entity_id_features,
+        operational_mode=str(args.operational_mode),
+    )
     if not feat_cols:
         raise SystemExit("No feature columns available")
-    categorical_cols = [c for c in ["jockey_key", "trainer_key"] if c in feat_cols]
+    validate_feature_contract(
+        feat_cols,
+        operational_mode=str(args.operational_mode),
+        stage="binary",
+    )
+    forbidden_feature_check_passed = True
+    categorical_cols = (
+        [c for c in BINARY_ENTITY_ID_FEATURES if c in feat_cols]
+        if include_entity_id_features
+        else []
+    )
 
     logger.info(
         "%s-%s train years=%s folds=%s window=%s holdout_year>=%s",
@@ -954,8 +1032,18 @@ def main(
         args=args,
         label_col=label_col,
         pred_col=pred_col,
+        include_entity_id_features=include_entity_id_features,
     )
     save_json(outputs["metrics"], metrics_payload)
+
+    feature_manifest_payload = _build_feature_manifest_payload(
+        args=args,
+        feat_cols=feat_cols,
+        categorical_cols=categorical_cols,
+        include_entity_id_features=include_entity_id_features,
+        forbidden_feature_check_passed=forbidden_feature_check_passed,
+    )
+    save_json(outputs["feature_manifest"], feature_manifest_payload)
 
     meta_payload = _build_meta_payload(
         args=args,
@@ -969,6 +1057,8 @@ def main(
         recent_df=recent_df,
         all_df=all_df,
         years=years,
+        include_entity_id_features=include_entity_id_features,
+        forbidden_feature_check_passed=forbidden_feature_check_passed,
     )
     save_json(outputs["meta"], meta_payload)
 
@@ -976,6 +1066,7 @@ def main(
     logger.info("wrote %s", outputs["metrics"])
     logger.info("wrote %s", outputs["model"])
     logger.info("wrote %s", outputs["all_years_model"])
+    logger.info("wrote %s", outputs["feature_manifest"])
     logger.info("wrote %s", outputs["meta"])
     return 0
 
