@@ -21,6 +21,7 @@
 |---|---|---|---|---|
 | `2026-03-04_backtest-wide-v3-pl-alignment` | v3ワイドROIをPL出力整合にする | v3 | `done` | [task](./done/2026/2026-03-04_backtest-wide-v3-pl-alignment.md) |
 | `2026-03-06_feature-governance-hardening` | v3特徴量ガバナンス hardening | v3 | `done` | [task](./done/2026/2026-03-06_feature-governance-hardening.md) |
+| `2026-03-06_fix-ci-for-pr34` | PR #34 の CI 失敗修正と再発防止 | v3 | `done` | [task](./done/2026/2026-03-06_fix-ci-for-pr34.md) |
 | `2026-03-06_v3-fixed-4y-pr` | v3 4年固定評価条件変更の PR 作成 | v3 | `done` | [task](./done/2026/2026-03-06_v3-fixed-4y-pr.md) |
 | `2026-03-06_v3-fixed-4y-eval-policy` | v3評価条件の4年固定sliding window統一 | v3 | `done` | [task](./done/2026/2026-03-06_v3-fixed-4y-eval-policy.md) |
 | `2026-03-06_v3-fixed-4y-retrain-eval` | v3 4年固定条件での再学習・検証・評価 | v3 | `done` | [task](./done/2026/2026-03-06_v3-fixed-4y-retrain-eval.md) |

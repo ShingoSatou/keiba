@@ -57,8 +57,7 @@ DEFAULT_MC_SAMPLES = 10_000
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Train v3 PL(uなし) layer with fixed-length sliding yearly CV "
-            "using OOF predictions."
+            "Train v3 PL(uなし) layer with fixed-length sliding yearly CV using OOF predictions."
         )
     )
     parser.add_argument("--features-input", default="data/features_v3.parquet")

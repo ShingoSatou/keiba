@@ -42,8 +42,7 @@ METHOD_CHOICES = ("logreg", "isotonic")
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Train odds->win probability calibrators with "
-            "fixed-length sliding yearly OOF (v3)."
+            "Train odds->win probability calibrators with fixed-length sliding yearly OOF (v3)."
         )
     )
     parser.add_argument("--input", default="data/features_v3.parquet")
@@ -259,9 +258,7 @@ def main(argv: list[str] | None = None) -> int:
                         "cv_window_policy": DEFAULT_CV_WINDOW_POLICY,
                         "train_window_years": int(args.train_window_years),
                         "holdout_year": int(args.holdout_year),
-                        "window_definition": make_window_definition(
-                            int(args.train_window_years)
-                        ),
+                        "window_definition": make_window_definition(int(args.train_window_years)),
                         "reliability": metrics["reliability"],
                     }
                 )

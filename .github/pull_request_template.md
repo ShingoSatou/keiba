@@ -5,6 +5,5 @@
 -
 
 ## 動作確認（ローカルで実施）
-- [ ] uv run ruff format .
-- [ ] uv run ruff check .
-- [ ] uv run pytest -q
+- [ ] `bash scripts/check_ci.sh check`
+- [ ] format 差分がある場合は `bash scripts/check_ci.sh fix`

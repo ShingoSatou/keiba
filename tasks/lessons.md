@@ -8,4 +8,4 @@
 
 ## Entries
 
-- まだ記録はない。
+- PR 前の確認は CI と同じ入口に寄せる。repo では `bash scripts/check_ci.sh check` を使い、format 漏れは `bash scripts/check_ci.sh fix` で先に潰す。

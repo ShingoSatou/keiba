@@ -49,11 +49,7 @@ def select_recent_window_years(
     holdout_year: int | None = None,
 ) -> list[int]:
     usable = sorted(
-        {
-            int(year)
-            for year in years
-            if holdout_year is None or int(year) < int(holdout_year)
-        }
+        {int(year) for year in years if holdout_year is None or int(year) < int(holdout_year)}
     )
     if not usable:
         return []
