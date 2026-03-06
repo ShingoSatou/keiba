@@ -15,19 +15,6 @@ from scripts_v3.v3_common import (
     save_json,
 )
 
-IDENTIFIER_COLUMNS = {
-    "race_id",
-    "horse_id",
-    "horse_no",
-    "race_date",
-    "t_race",
-    "year",
-    "target_label",
-    "finish_pos",
-    "y_win",
-    "y_place",
-}
-
 
 def prepare_binary_frame(frame: pd.DataFrame, *, label_col: str) -> pd.DataFrame:
     required = {"race_id", "horse_id", "horse_no", "race_date", "field_size", label_col}
@@ -53,14 +40,6 @@ def prepare_binary_frame(frame: pd.DataFrame, *, label_col: str) -> pd.DataFrame
 
     out = out.sort_values(["race_id", "horse_no"], kind="mergesort").reset_index(drop=True)
     return out
-
-
-def feature_columns(frame: pd.DataFrame, *, extra_drop: set[str] | None = None) -> list[str]:
-    drop_cols = set(IDENTIFIER_COLUMNS)
-    if extra_drop:
-        drop_cols |= set(extra_drop)
-    cols = [c for c in frame.columns if c not in drop_cols]
-    return cols
 
 
 def coerce_feature_matrix(frame: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
@@ -192,7 +171,6 @@ __all__ = [
     "build_oof_frame",
     "coerce_feature_matrix",
     "compute_binary_metrics",
-    "feature_columns",
     "fold_integrity",
     "hash_files",
     "prepare_binary_frame",

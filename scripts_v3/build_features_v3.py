@@ -121,9 +121,28 @@ def main(argv: list[str] | None = None) -> int:
         "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "input_path": str(input_path),
         "output_path": str(output_path),
+        "operational_default": "t10_only",
         "rows": int(len(features_v3)),
         "races": int(features_v3["race_id"].nunique()) if not features_v3.empty else 0,
         "columns": features_v3.columns.tolist(),
+        "contains_final_odds_columns": all(
+            col in features_v3.columns
+            for col in [
+                "odds_win_final",
+                "odds_final_data_kbn",
+                "p_win_odds_final_raw",
+                "p_win_odds_final_norm",
+            ]
+        ),
+        "contains_t10_odds_columns": all(
+            col in features_v3.columns
+            for col in [
+                "odds_win_t10",
+                "odds_t10_data_kbn",
+                "p_win_odds_t10_raw",
+                "p_win_odds_t10_norm",
+            ]
+        ),
         "coverage": {
             "finish_pos_notna_rate": float(features_v3["finish_pos"].notna().mean()),
             "odds_win_final_notna_rate": float(features_v3["odds_win_final"].notna().mean()),
