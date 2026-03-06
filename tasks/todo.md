@@ -13,7 +13,7 @@
 
 | id | title | version | status | file |
 |---|---|---|---|---|
-| `2026-03-06_fix-ci-for-pr33` | PR #33 の CI 失敗修正 | v3 | `active` | [task](./active/2026-03-06_fix-ci-for-pr33.md) |
+| - | 進行中タスクなし | - | - | - |
 
 ## Done
 
@@ -23,6 +23,7 @@
 | `2026-03-06_feature-governance-hardening` | v3特徴量ガバナンス hardening | v3 | `done` | [task](./done/2026/2026-03-06_feature-governance-hardening.md) |
 | `2026-03-06_retrain-eval-current-contract` | current contract の再学習・検証・評価 | v3 | `done` | [task](./done/2026/2026-03-06_retrain-eval-current-contract.md) |
 | `2026-03-06_v3-spec-split-and-ledger-update` | v3仕様書分割と AGENTS の仕様書台帳化 | v3 | `done` | [task](./done/2026/2026-03-06_v3-spec-split-and-ledger-update.md) |
+| `2026-03-06_fix-ci-for-pr33` | PR #33 の CI 失敗修正 | v3 | `done` | [task](./done/2026/2026-03-06_fix-ci-for-pr33.md) |
 
 ## 移行メモ
 
