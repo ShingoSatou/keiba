@@ -285,6 +285,18 @@ def _score_with_pl(frame: pd.DataFrame, artifact: dict[str, Any]) -> pd.DataFram
     return out
 
 
+def _attach_cv_policy_from_artifact(frame: pd.DataFrame, artifact: dict[str, Any]) -> pd.DataFrame:
+    cv_policy = artifact.get("cv_policy", {})
+    if not isinstance(cv_policy, dict) or not cv_policy:
+        return frame
+
+    out = frame.copy()
+    for key in ("cv_window_policy", "train_window_years", "holdout_year", "window_definition"):
+        if key in cv_policy:
+            out[key] = cv_policy[key]
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(level=getattr(logging, str(args.log_level).upper(), logging.INFO))
@@ -323,6 +335,11 @@ def main(argv: list[str] | None = None) -> int:
         top_k=3,
     )
     scored = scored.merge(p_top3, on=["race_id", "horse_no"], how="left")
+    if "race_date" in scored.columns:
+        race_year = pd.to_datetime(scored["race_date"], errors="coerce").dt.year
+        if race_year.notna().all():
+            scored["valid_year"] = race_year.astype(int)
+    scored = _attach_cv_policy_from_artifact(scored, artifact)
     scored = scored.sort_values(["race_id", "horse_no"], kind="mergesort")
 
     keep_cols = [
@@ -343,6 +360,11 @@ def main(argv: list[str] | None = None) -> int:
             "p_place_cat",
             "pl_score",
             "p_top3",
+            "valid_year",
+            "cv_window_policy",
+            "train_window_years",
+            "holdout_year",
+            "window_definition",
         ]
         if c in scored.columns
     ]
@@ -360,6 +382,15 @@ def main(argv: list[str] | None = None) -> int:
             seed=int(args.seed),
             top_k=3,
         )
+        if "valid_year" in scored.columns:
+            year_map = (
+                scored[["race_id", "valid_year"]]
+                .drop_duplicates(["race_id"])
+                .set_index("race_id")["valid_year"]
+                .to_dict()
+            )
+            wide["valid_year"] = wide["race_id"].map(year_map).astype(int)
+        wide = _attach_cv_policy_from_artifact(wide, artifact)
         wide_output_path.parent.mkdir(parents=True, exist_ok=True)
         wide.to_parquet(wide_output_path, index=False)
         logger.info("wrote %s", wide_output_path)

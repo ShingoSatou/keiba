@@ -8,6 +8,7 @@ from scripts_v3.v3_common import (
     allocate_race_bets,
     assert_fold_integrity,
     assert_sorted,
+    build_fixed_window_year_folds,
     build_rolling_year_folds,
     compute_max_drawdown,
     kumiban_from_horse_nos,
@@ -25,6 +26,14 @@ def test_build_rolling_year_folds_basic() -> None:
     assert folds[0].valid_year == 2023
     assert tuple(folds[1].train_years) == (2022, 2023)
     assert folds[1].valid_year == 2024
+
+
+def test_build_rolling_year_folds_is_alias_of_fixed_window_helper() -> None:
+    years = [2020, 2021, 2022, 2023, 2024, 2025]
+    folds = build_rolling_year_folds(years, train_window_years=4, holdout_year=2025)
+    fixed = build_fixed_window_year_folds(years, window_years=4, holdout_year=2025)
+
+    assert folds == fixed
 
 
 def test_fold_integrity_detects_leakage() -> None:

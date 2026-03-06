@@ -17,6 +17,13 @@ feature governance hardening 後の current v3 contract で再学習し、
 - binary / PL ともに feature registry 契約を適用
 - PL は `torch` 未導入のため NumPy optimizer fallback で学習
 
+## 1.1 Evaluation policy update
+
+- この report の数値は 2026-03-06 時点の hardening / retrain 実測として保持する。
+- ただし今後の v3 標準比較条件は `train_window_years=4` / `cv_window_policy=fixed_sliding` に統一する。
+- したがって、この report の数値は将来の 4年固定 run report と直接横比較しない。
+- holdout year の考え方自体は維持し、標準例は `holdout_year=2025` を使う。
+
 ## 2. Contract 検証結果
 
 - `data/features_v3_meta.json`, `data/features_v3_2025_meta.json`
@@ -118,16 +125,16 @@ rel_meta_tm_score_z
 | holdout current | `pl_v3_holdout_2025_pred.parquet` | 2025 | 0.3816 | 1705 |
 
 所見:
-- default `train-window-years=3` の PL OOF は `valid_year=2024` のみで、旧 report の `w2` OOF（2023-2024）と直接比較しない方がよい。
+- この report 実行時点の PL OOF は旧 default に依存しており、今後の 4年固定 OOF と直接比較しない方がよい。
 - holdout ROI `0.3816` は旧 baseline より良いが、単年・thresholdなし・DB依存のため過信しない。
-- ROI を主評価にするなら、`train-window-years=2` を current contract でも再計測し、2023-2024 OOF と横並び比較するのが次の自然な手順。
+- 今後 ROI を主評価にする場合も、まずは 4年固定条件で OOF / holdout を再計測したうえで比較する。
 
 ## 7. 総合考察
 
 1. feature governance hardening により、train-serve mismatch と accidental leakage のリスクを下げつつ、binary の識別性能は大きく崩れていない。
 2. operational default としては、binary は `cat`、odds 校正は t10 isotonic、PL は current explicit-list のまま維持してよい。
-3. ただし ROI は PL の学習窓と評価年の取り方に敏感で、default `w=3` の OOF だけで良否を決めない方がよい。
-4. 次の改善候補は feature 数追加ではなく、`train-window-years` の再検討、`torch` 導入時の PL 再学習、ROI 閾値設計の再検証。
+3. ただし ROI は PL の学習窓と評価年の取り方に敏感で、この report 実行時点の旧 default OOF だけで良否を決めない方がよい。
+4. 次の改善候補は feature 数追加ではなく、4年固定条件を維持したままのモデル改善、`torch` 導入時の PL 再学習、ROI 閾値設計の再検証。
 
 ## 8. 実行コマンド
 
@@ -166,3 +173,89 @@ uv run python scripts_v3/backtest_wide_v3.py \
 - 2026-03-04 の旧 report とは feature contract も一部評価設定も違うため、数値をそのまま横比較しない。
 - `docs/ops_v3/v3_run_report_2026-03-04.md` は履歴として残し、この文書を current contract の結果として扱う。
 - ROI 系の値は DB の odds / payout データ更新で再計測時に変動しうる。
+
+## 10. Fixed-Sliding 4y rerun（2026-03-06 実測）
+
+### 10.1 実行条件
+
+- 標準比較条件: `train_window_years=4`, `cv_window_policy=fixed_sliding`, `holdout_year=2025`
+- binary / odds calibration は `valid_year=2020-2024` の 5 fold
+- PL は OOF stacking 制約のため `valid_year=2024` の 1 fold
+- holdout 評価入力: `data/features_v3_2025.parquet`（4,971行 / 344レース）
+- holdout PL 出力: `data/oof/pl_v3_holdout_2025_pred.parquet`
+
+### 10.2 binary 結果
+
+#### 単勝
+
+| model | CV logloss | CV auc | 2025 holdout logloss | 2025 holdout auc |
+|---|---:|---:|---:|---:|
+| win_lgbm | 0.21296 | 0.81193 | 0.21045 | 0.79901 |
+| win_xgb  | 0.21133 | 0.81491 | 0.20937 | 0.80194 |
+| win_cat  | 0.21025 | 0.81726 | 0.20777 | 0.80530 |
+
+#### 複勝
+
+| model | CV logloss | CV auc | 2025 holdout logloss | 2025 holdout auc |
+|---|---:|---:|---:|---:|
+| place_lgbm | 0.42349 | 0.79120 | 0.43427 | 0.76630 |
+| place_xgb  | 0.42300 | 0.79168 | 0.43158 | 0.76960 |
+| place_cat  | 0.42151 | 0.79376 | 0.42892 | 0.77458 |
+
+所見:
+- 4年固定でも win / place ともに `cat` が最良。
+- holdout AUC は旧 current-contract report よりやや低下しており、4年固定化で比較条件を締めた影響が見える。
+
+### 10.3 odds 校正結果
+
+| variant | CV logloss | CV brier | CV auc | CV ece | 2025 holdout logloss | 2025 holdout auc |
+|---|---:|---:|---:|---:|---:|---:|
+| `p_win_odds_t10_norm_cal_isotonic` | 0.20947 | 0.05840 | 0.82108 | 0.00503 | 0.20929 | 0.80434 |
+| `p_win_odds_t10_norm_cal_logreg`   | 0.21918 | 0.05960 | 0.82171 | 0.01310 | 0.21353 | 0.80510 |
+| `p_win_odds_final_norm_cal_isotonic` | 0.20813 | 0.05810 | 0.82350 | 0.00535 | 0.20527 | 0.81807 |
+| `p_win_odds_final_norm_cal_logreg`   | 0.21725 | 0.05905 | 0.82404 | 0.01186 | 0.20740 | 0.81985 |
+
+所見:
+- operational t10 path では今回も isotonic が最有力。
+- final odds 校正は validation-only という位置づけを維持する。
+
+### 10.4 PL / top3 結果
+
+| 指標 | 値 |
+|---|---:|
+| CV `pl_nll_valid(mean)` | 23.73781 |
+| CV `top3_logloss(mean)` | 0.43167 |
+| CV `top3_auc(mean)` | 0.79445 |
+| 2025 holdout `top3_logloss` | 0.43710 |
+| 2025 holdout `top3_auc` | 0.77012 |
+
+所見:
+- 4年固定では PL OOF が `valid_year=2024` のみになる。
+- holdout top3 指標は従来と近いが、CV 側は 1 fold 評価になるため過度に一般化しない。
+
+### 10.5 wide ROI 結果
+
+| 評価 | 入力 | 年 | ROI | bets |
+|---|---|---:|---:|---:|
+| OOF fixed4 | `pl_v3_wide_oof.parquet` | 2024 | 0.0000 | 1289 |
+| holdout fixed4 | `pl_v3_holdout_2025_pred.parquet` | 2025 | 0.1863 | 1613 |
+
+所見:
+- fixed4 OOF は 2024 単年のみで、今回の backtest では `342` レース / `1289` bets / `0` hits だった。
+- holdout 2025 は `344` レース / `1613` bets / ROI `0.1863`。
+- ROI は単年・DB依存でぶれやすいため、今後のモデル改善比較ではまず同じ fixed4 条件で再計測する。
+
+### 10.6 policy 保存確認
+
+- `data/oof/win_lgbm_cv_metrics.json`
+- `data/oof/odds_win_calibration_cv_metrics.json`
+- `data/oof/pl_v3_cv_metrics.json`
+- `models/pl_v3_bundle_meta.json`
+- `data/backtest_v3/backtest_wide_v3_direct_holdout_2025_fixed4_meta.json`
+
+上記すべてで以下を確認した。
+
+- `cv_window_policy = "fixed_sliding"`
+- `train_window_years = 4`
+- `holdout_year = 2025`
+- `window_definition = "train = previous 4 years only, valid = current year"`

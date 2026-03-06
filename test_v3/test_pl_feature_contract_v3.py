@@ -1,14 +1,23 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import numpy as np
 import pandas as pd
 
+from scripts_v3.cv_policy_v3 import FoldSpec
 from scripts_v3.feature_registry_v3 import (
     FINAL_ODDS_BASE_FEATURES,
     PL_CONTEXT_FEATURES_SMALL,
     PL_REQUIRED_PRED_FEATURES,
     PL_T10_ODDS_FEATURES,
 )
-from scripts_v3.train_pl_v3 import _collect_pl_feature_columns
+from scripts_v3.train_pl_v3 import (
+    _artifact_from_fit,
+    _build_pl_meta_payload,
+    _collect_pl_feature_columns,
+    parse_args,
+)
 
 
 def _sample_frame() -> pd.DataFrame:
@@ -99,3 +108,52 @@ def test_pl_extra_numeric_columns_do_not_expand_feature_list() -> None:
     )
 
     assert extra_cols == base_cols
+
+
+def test_pl_artifact_and_meta_include_cv_policy() -> None:
+    args = parse_args([])
+    folds = [FoldSpec(fold_id=1, train_years=(2020, 2021, 2022, 2023), valid_year=2024)]
+    feature_cols = _collect_pl_feature_columns(
+        _sample_frame(),
+        required_pred_cols=PL_REQUIRED_PRED_FEATURES,
+        include_final_odds=False,
+        operational_mode="t10_only",
+    )
+    artifact = _artifact_from_fit(
+        feature_cols=feature_cols,
+        weights=np.ones(len(feature_cols)),
+        stats={
+            "median": {col: 0.0 for col in feature_cols},
+            "mean": {col: 0.0 for col in feature_cols},
+            "std": {col: 1.0 for col in feature_cols},
+        },
+        args=args,
+        train_years=[2021, 2022, 2023, 2024],
+        train_rows=10,
+        train_races=2,
+    )
+    meta = _build_pl_meta_payload(
+        args=args,
+        folds=folds,
+        features_path=Path("data/features_v3.parquet"),
+        oof_output=Path("data/oof/pl_v3_oof.parquet"),
+        wide_oof_output=Path("data/oof/pl_v3_wide_oof.parquet"),
+        metrics_output=Path("data/oof/pl_v3_cv_metrics.json"),
+        model_output=Path("models/pl_v3_recent_window.joblib"),
+        all_years_model_output=Path("models/pl_v3_all_years.joblib"),
+        required_pred_cols=list(PL_REQUIRED_PRED_FEATURES),
+        pl_feature_cols=feature_cols,
+        cv_summary={},
+        recent_df=_sample_frame().assign(year=2024),
+        all_df=_sample_frame().assign(year=2024),
+        years=[2024],
+    )
+
+    assert artifact["cv_policy"]["cv_window_policy"] == "fixed_sliding"
+    assert artifact["cv_policy"]["train_window_years"] == 4
+    assert artifact["cv_policy"]["holdout_year"] == 2025
+    assert meta["cv_policy"]["valid_years"] == [2024]
+    assert (
+        meta["cv_policy"]["window_definition"]
+        == "train = previous 4 years only, valid = current year"
+    )

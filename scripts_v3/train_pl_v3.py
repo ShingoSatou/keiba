@@ -30,18 +30,23 @@ from scripts_v3.pl_v3_common import (  # noqa: E402
     predict_linear_scores,
 )
 from scripts_v3.train_binary_v3_common import (  # noqa: E402
-    build_rolling_year_folds,
+    DEFAULT_CV_WINDOW_POLICY,
+    DEFAULT_TRAIN_WINDOW_YEARS,
+    attach_cv_policy_columns,
+    build_cv_policy_payload,
+    build_fixed_window_year_folds,
     compute_binary_metrics,
     fold_integrity,
     hash_files,
+    make_window_definition,
     resolve_path,
     save_json,
+    select_recent_window_years,
 )
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_HOLDOUT_YEAR = 2025
-DEFAULT_TRAIN_WINDOW_YEARS = 3
 DEFAULT_EPOCHS = 300
 DEFAULT_LR = 0.05
 DEFAULT_L2 = 1e-5
@@ -51,7 +56,9 @@ DEFAULT_MC_SAMPLES = 10_000
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train v3 PL(uなし) layer with rolling yearly CV using OOF predictions."
+        description=(
+            "Train v3 PL(uなし) layer with fixed-length sliding yearly CV using OOF predictions."
+        )
     )
     parser.add_argument("--features-input", default="data/features_v3.parquet")
     parser.add_argument("--win-lgbm-oof", default="data/oof/win_lgbm_oof.parquet")
@@ -82,7 +89,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument("--holdout-year", type=int, default=DEFAULT_HOLDOUT_YEAR)
-    parser.add_argument("--train-window-years", type=int, default=DEFAULT_TRAIN_WINDOW_YEARS)
+    parser.add_argument(
+        "--train-window-years",
+        type=int,
+        default=DEFAULT_TRAIN_WINDOW_YEARS,
+        help="The v3 standard comparison condition is fixed_sliding with 4 years.",
+    )
     parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
     parser.add_argument("--lr", type=float, default=DEFAULT_LR)
     parser.add_argument("--l2", type=float, default=DEFAULT_L2)
@@ -405,6 +417,13 @@ def _artifact_from_fit(
             "top_k": 3,
         },
         "operational_mode": _operational_mode(bool(args.include_final_odds_features)),
+        "cv_policy": {
+            "cv_window_policy": DEFAULT_CV_WINDOW_POLICY,
+            "train_window_years": int(args.train_window_years),
+            "valid_years": [],
+            "holdout_year": int(args.holdout_year),
+            "window_definition": make_window_definition(int(args.train_window_years)),
+        },
         "train_summary": {
             "years": list(map(int, train_years)),
             "rows": int(train_rows),
@@ -425,6 +444,7 @@ def _run_pl_cv_loop(
     oof_list: list[pd.DataFrame] = []
     wide_oof_list: list[pd.DataFrame] = []
     fold_metrics: list[dict[str, Any]] = []
+    window_definition = make_window_definition(int(args.train_window_years))
 
     for fold in folds:
         train_df = eligible[eligible["year"].isin(fold.train_years)].copy()
@@ -494,6 +514,13 @@ def _run_pl_cv_loop(
         scored = scored.merge(p_top3, on=["race_id", "horse_no"], how="left")
         scored["fold_id"] = int(fold.fold_id)
         scored["valid_year"] = int(fold.valid_year)
+        scored = attach_cv_policy_columns(
+            scored,
+            train_window_years=int(args.train_window_years),
+            holdout_year=int(args.holdout_year),
+            cv_window_policy=DEFAULT_CV_WINDOW_POLICY,
+            window_definition=window_definition,
+        )
         scored = scored.sort_values(["race_id", "horse_no"], kind="mergesort")
         oof_list.append(scored)
 
@@ -530,6 +557,10 @@ def _run_pl_cv_loop(
             "top3_brier": top3_metrics["brier"],
             "top3_auc": top3_metrics["auc"],
             "top3_ece": top3_metrics["ece"],
+            "cv_window_policy": DEFAULT_CV_WINDOW_POLICY,
+            "train_window_years": int(args.train_window_years),
+            "holdout_year": int(args.holdout_year),
+            "window_definition": window_definition,
         }
         fold_metrics.append(fold_metric)
         logger.info(
@@ -559,6 +590,13 @@ def _run_pl_cv_loop(
             if not wide.empty:
                 wide["fold_id"] = int(fold.fold_id)
                 wide["valid_year"] = int(fold.valid_year)
+                wide = attach_cv_policy_columns(
+                    wide,
+                    train_window_years=int(args.train_window_years),
+                    holdout_year=int(args.holdout_year),
+                    cv_window_policy=DEFAULT_CV_WINDOW_POLICY,
+                    window_definition=window_definition,
+                )
                 wide_oof_list.append(wide)
 
     if not oof_list:
@@ -576,10 +614,14 @@ def _train_pl_final_models(
     years: list[int],
     pl_feature_cols: list[str],
     args: argparse.Namespace,
+    cv_policy: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any], pd.DataFrame, pd.DataFrame]:
     """recent window と all-years の PL 最終モデルを学習する。"""
-    recent_span = int(args.train_window_years) + 1
-    recent_years = years[-recent_span:] if len(years) > recent_span else years
+    recent_years = select_recent_window_years(
+        years,
+        train_window_years=int(args.train_window_years),
+        holdout_year=int(args.holdout_year),
+    )
     recent_df = eligible[eligible["year"].isin(recent_years)].copy()
     all_df = eligible.copy()
 
@@ -598,6 +640,7 @@ def _train_pl_final_models(
         train_rows=int(len(recent_df)),
         train_races=int(recent_df["race_id"].nunique()),
     )
+    artifact_recent["cv_policy"] = dict(cv_policy)
 
     w_all, stats_all, _ = _fit_pl_on_frame(
         all_df,
@@ -614,12 +657,15 @@ def _train_pl_final_models(
         train_rows=int(len(all_df)),
         train_races=int(all_df["race_id"].nunique()),
     )
+    artifact_all["cv_policy"] = dict(cv_policy)
+    artifact_all["analysis_only"] = True
 
     return artifact_recent, artifact_all, recent_df, all_df
 
 
 def _build_pl_metrics_payload(
     *,
+    folds: list,
     fold_metrics: list[dict[str, Any]],
     eligible: pd.DataFrame,
     oof: pd.DataFrame,
@@ -638,9 +684,16 @@ def _build_pl_metrics_payload(
     }
     return {
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "cv_policy": build_cv_policy_payload(
+            folds,
+            train_window_years=int(args.train_window_years),
+            holdout_year=int(args.holdout_year),
+            cv_window_policy=DEFAULT_CV_WINDOW_POLICY,
+        ),
         "config": {
             "holdout_year": int(args.holdout_year),
             "train_window_years": int(args.train_window_years),
+            "cv_window_policy": DEFAULT_CV_WINDOW_POLICY,
             "epochs": int(args.epochs),
             "lr": float(args.lr),
             "l2": float(args.l2),
@@ -666,6 +719,7 @@ def _build_pl_metrics_payload(
 def _build_pl_meta_payload(
     *,
     args: argparse.Namespace,
+    folds: list,
     features_path: Path,
     oof_output: Path,
     wide_oof_output: Path,
@@ -684,6 +738,12 @@ def _build_pl_meta_payload(
     return {
         "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "holdout_rule": f"exclude year >= {args.holdout_year}",
+        "cv_policy": build_cv_policy_payload(
+            folds,
+            train_window_years=int(args.train_window_years),
+            holdout_year=int(args.holdout_year),
+            cv_window_policy=DEFAULT_CV_WINDOW_POLICY,
+        ),
         "operational_mode": _operational_mode(bool(args.include_final_odds_features)),
         "input_paths": {
             "features_v3": str(features_path),
@@ -708,8 +768,10 @@ def _build_pl_meta_payload(
         "final_train_summary": {
             "main_model_years": recent_years,
             "main_model_rows": int(len(recent_df)),
+            "main_model_window_type": "fixed_sliding_recent_window",
             "all_years_model_years": years,
             "all_years_model_rows": int(len(all_df)),
+            "all_years_model_analysis_only": True,
         },
         "code_hash": hash_files(
             [
@@ -763,23 +825,23 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("No eligible rows for PL training after OOF/holdout filtering.")
 
     years = sorted(eligible["year"].unique().tolist())
-    try:
-        folds = build_rolling_year_folds(
-            years,
-            train_window_years=int(args.train_window_years),
-            holdout_year=int(args.holdout_year),
-        )
-    except ValueError as exc:
+    folds = build_fixed_window_year_folds(
+        years,
+        window_years=int(args.train_window_years),
+        holdout_year=int(args.holdout_year),
+    )
+    if not folds:
         max_window = max(1, len(years) - 1)
         raise SystemExit(
-            f"{exc} (PL uses OOF-only rows. available_years={years}, "
-            f"try --train-window-years <= {max_window})"
-        ) from exc
+            "No PL CV folds available under the fixed_sliding policy "
+            f"(available_years={years}, try --train-window-years <= {max_window})"
+        )
     logger.info(
-        "pl-v3 train years=%s folds=%s window=%s holdout_year>=%s rows=%s races=%s",
+        "pl-v3 train years=%s folds=%s window=%s cv_policy=%s holdout_year>=%s rows=%s races=%s",
         years,
         len(folds),
         args.train_window_years,
+        DEFAULT_CV_WINDOW_POLICY,
         args.holdout_year,
         len(eligible),
         eligible["race_id"].nunique(),
@@ -814,6 +876,10 @@ def main(argv: list[str] | None = None) -> int:
                     "p_top3_2",
                     "fold_id",
                     "valid_year",
+                    "cv_window_policy",
+                    "train_window_years",
+                    "holdout_year",
+                    "window_definition",
                 ]
             )
         )
@@ -825,6 +891,12 @@ def main(argv: list[str] | None = None) -> int:
         years=years,
         pl_feature_cols=pl_feature_cols,
         args=args,
+        cv_policy=build_cv_policy_payload(
+            folds,
+            train_window_years=int(args.train_window_years),
+            holdout_year=int(args.holdout_year),
+            cv_window_policy=DEFAULT_CV_WINDOW_POLICY,
+        ),
     )
 
     model_output.parent.mkdir(parents=True, exist_ok=True)
@@ -834,6 +906,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # --- メトリクス / メタ保存 ---
     metrics_payload = _build_pl_metrics_payload(
+        folds=folds,
         fold_metrics=fold_metrics,
         eligible=eligible,
         oof=oof,
@@ -846,6 +919,7 @@ def main(argv: list[str] | None = None) -> int:
 
     meta_payload = _build_pl_meta_payload(
         args=args,
+        folds=folds,
         features_path=features_path,
         oof_output=oof_output,
         wide_oof_output=wide_oof_output,

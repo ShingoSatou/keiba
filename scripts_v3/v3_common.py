@@ -16,6 +16,17 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from scripts_v3.cv_policy_v3 import (
+    DEFAULT_CV_WINDOW_POLICY,
+    DEFAULT_TRAIN_WINDOW_YEARS,
+    FoldSpec,
+    attach_cv_policy_columns,
+    build_cv_policy_payload,
+    build_fixed_window_year_folds,
+    make_window_definition,
+    select_recent_window_years,
+)
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # ---------------------------------------------------------------------------
@@ -46,15 +57,8 @@ def hash_files(paths: list[Path]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Rolling 年次 CV（v2 train_ranker_v2 由来）
+# Fixed-length sliding 年次 CV
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class FoldSpec:
-    fold_id: int
-    train_years: tuple[int, ...]
-    valid_year: int
 
 
 def build_rolling_year_folds(
@@ -63,24 +67,12 @@ def build_rolling_year_folds(
     train_window_years: int,
     holdout_year: int,
 ) -> list[FoldSpec]:
-    """Rolling 年次 CV の fold を生成する。"""
-    if train_window_years <= 0:
-        raise ValueError("train_window_years must be > 0")
-    trainable_years = sorted(y for y in years if y < holdout_year)
-    if len(trainable_years) < train_window_years + 1:
-        raise ValueError(
-            "Not enough non-holdout years for rolling folds: "
-            f"need >= {train_window_years + 1}, got {len(trainable_years)}"
-        )
-    folds: list[FoldSpec] = []
-    for idx in range(train_window_years, len(trainable_years)):
-        fold = FoldSpec(
-            fold_id=len(folds) + 1,
-            train_years=tuple(trainable_years[idx - train_window_years : idx]),
-            valid_year=trainable_years[idx],
-        )
-        folds.append(fold)
-    return folds
+    """Backward-compatible alias for fixed-length sliding yearly folds."""
+    return build_fixed_window_year_folds(
+        years,
+        window_years=int(train_window_years),
+        holdout_year=int(holdout_year),
+    )
 
 
 def assert_fold_integrity(train_df: pd.DataFrame, valid_df: pd.DataFrame, valid_year: int) -> None:
@@ -292,8 +284,15 @@ __all__ = [
     "save_json",
     "hash_files",
     # CV
+    "DEFAULT_CV_WINDOW_POLICY",
+    "DEFAULT_TRAIN_WINDOW_YEARS",
     "FoldSpec",
+    "attach_cv_policy_columns",
+    "build_cv_policy_payload",
+    "build_fixed_window_year_folds",
     "build_rolling_year_folds",
+    "make_window_definition",
+    "select_recent_window_years",
     "assert_fold_integrity",
     # ソート
     "assert_sorted",

@@ -7,12 +7,19 @@ import pandas as pd
 from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
 
 from scripts_v3.v3_common import (
+    DEFAULT_CV_WINDOW_POLICY,
+    DEFAULT_TRAIN_WINDOW_YEARS,
     PROJECT_ROOT,
     assert_fold_integrity,
+    attach_cv_policy_columns,
+    build_cv_policy_payload,
+    build_fixed_window_year_folds,
     build_rolling_year_folds,
     hash_files,
+    make_window_definition,
     resolve_path,
     save_json,
+    select_recent_window_years,
 )
 
 
@@ -145,6 +152,10 @@ def build_oof_frame(
     pred_values: np.ndarray,
     fold_id: int,
     valid_year: int,
+    train_window_years: int = DEFAULT_TRAIN_WINDOW_YEARS,
+    holdout_year: int,
+    cv_window_policy: str = DEFAULT_CV_WINDOW_POLICY,
+    window_definition: str | None = None,
 ) -> pd.DataFrame:
     out_cols = [
         "race_id",
@@ -161,19 +172,33 @@ def build_oof_frame(
     out[pred_col] = np.asarray(pred_values, dtype=float)
     out["fold_id"] = int(fold_id)
     out["valid_year"] = int(valid_year)
+    out = attach_cv_policy_columns(
+        out,
+        train_window_years=int(train_window_years),
+        holdout_year=int(holdout_year),
+        cv_window_policy=str(cv_window_policy),
+        window_definition=window_definition,
+    )
     out = out.sort_values(["race_id", "horse_no"], kind="mergesort")
     return out
 
 
 __all__ = [
+    "DEFAULT_CV_WINDOW_POLICY",
+    "DEFAULT_TRAIN_WINDOW_YEARS",
     "PROJECT_ROOT",
+    "attach_cv_policy_columns",
+    "build_cv_policy_payload",
+    "build_fixed_window_year_folds",
     "build_rolling_year_folds",
     "build_oof_frame",
     "coerce_feature_matrix",
     "compute_binary_metrics",
     "fold_integrity",
     "hash_files",
+    "make_window_definition",
     "prepare_binary_frame",
     "resolve_path",
     "save_json",
+    "select_recent_window_years",
 ]
