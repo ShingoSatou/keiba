@@ -19,10 +19,12 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.infrastructure.database import Database  # noqa: E402
 from scripts_v3.pl_v3_common import estimate_p_wide_by_race  # noqa: E402
 from scripts_v3.v3_common import (  # noqa: E402
+    DEFAULT_CV_WINDOW_POLICY,
     BankrollConfig,
     allocate_race_bets,
     compute_max_drawdown,
     kumiban_from_horse_nos,
+    make_window_definition,
     resolve_path,
     round_down_to_unit,
     save_json,
@@ -33,6 +35,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOLDOUT_YEAR = 2025
 DEFAULT_SEED = 42
 MIN_P_WIDE_STAGE_CHOICES = ("candidate", "selected")
+POLICY_TEXT_COLUMNS = ("cv_window_policy", "window_definition")
+POLICY_INT_COLUMNS = ("train_window_years", "holdout_year")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -131,6 +135,45 @@ def _validate_single_value_per_race(frame: pd.DataFrame, *, column: str) -> None
         raise SystemExit(f"Column '{column}' must be constant per race_id. sample={sample}")
 
 
+def _normalize_optional_policy_columns(frame: pd.DataFrame, *, input_mode: str) -> pd.DataFrame:
+    out = frame.copy()
+
+    if "race_date" in out.columns:
+        out["race_date"] = pd.to_datetime(out["race_date"], errors="coerce")
+        _validate_single_value_per_race(out, column="race_date")
+
+    if "valid_year" not in out.columns and "race_date" in out.columns:
+        race_year = pd.to_datetime(out["race_date"], errors="coerce").dt.year
+        if race_year.notna().all():
+            out["valid_year"] = race_year.astype(int)
+
+    if "valid_year" in out.columns:
+        out["valid_year"] = _coerce_required_numeric_column(
+            out,
+            column="valid_year",
+            as_int=True,
+            input_mode=input_mode,
+        )
+        _validate_single_value_per_race(out, column="valid_year")
+
+    for column in POLICY_INT_COLUMNS:
+        if column in out.columns:
+            out[column] = _coerce_required_numeric_column(
+                out,
+                column=column,
+                as_int=True,
+                input_mode=input_mode,
+            )
+            _validate_single_value_per_race(out, column=column)
+
+    for column in POLICY_TEXT_COLUMNS:
+        if column in out.columns:
+            out[column] = out[column].astype(str).str.strip()
+            _validate_single_value_per_race(out, column=column)
+
+    return out
+
+
 def _sanitize_pair_input(frame: pd.DataFrame) -> pd.DataFrame:
     required = {"race_id", "horse_no_1", "horse_no_2", "kumiban", "p_wide"}
     missing = sorted(required - set(frame.columns))
@@ -195,6 +238,8 @@ def _sanitize_pair_input(frame: pd.DataFrame) -> pd.DataFrame:
             f"{dup.to_dict('records')}"
         )
 
+    out = _normalize_optional_policy_columns(out, input_mode="pair-level")
+
     if "fold_id" in out.columns:
         out["fold_id"] = _coerce_required_numeric_column(
             out,
@@ -203,15 +248,6 @@ def _sanitize_pair_input(frame: pd.DataFrame) -> pd.DataFrame:
             input_mode="pair-level",
         )
         _validate_single_value_per_race(out, column="fold_id")
-
-    if "valid_year" in out.columns:
-        out["valid_year"] = _coerce_required_numeric_column(
-            out,
-            column="valid_year",
-            as_int=True,
-            input_mode="pair-level",
-        )
-        _validate_single_value_per_race(out, column="valid_year")
 
     if "p_top3_1" in out.columns:
         out["p_top3_1"] = pd.to_numeric(out["p_top3_1"], errors="coerce")
@@ -234,6 +270,11 @@ def _sanitize_pair_input(frame: pd.DataFrame) -> pd.DataFrame:
             "p_top3_2",
             "fold_id",
             "valid_year",
+            "race_date",
+            "cv_window_policy",
+            "train_window_years",
+            "holdout_year",
+            "window_definition",
             "target_label",
             "p_top3",
         ]
@@ -277,6 +318,8 @@ def _sanitize_horse_input(frame: pd.DataFrame) -> pd.DataFrame:
             f"Duplicate (race_id, horse_no) in horse-level input: {dup.to_dict('records')}"
         )
 
+    out = _normalize_optional_policy_columns(out, input_mode="horse-level")
+
     if "fold_id" in out.columns:
         out["fold_id"] = _coerce_required_numeric_column(
             out,
@@ -286,15 +329,6 @@ def _sanitize_horse_input(frame: pd.DataFrame) -> pd.DataFrame:
         )
         _validate_single_value_per_race(out, column="fold_id")
 
-    if "valid_year" in out.columns:
-        out["valid_year"] = _coerce_required_numeric_column(
-            out,
-            column="valid_year",
-            as_int=True,
-            input_mode="horse-level",
-        )
-        _validate_single_value_per_race(out, column="valid_year")
-
     keep_cols = [
         c
         for c in [
@@ -303,6 +337,11 @@ def _sanitize_horse_input(frame: pd.DataFrame) -> pd.DataFrame:
             "pl_score",
             "fold_id",
             "valid_year",
+            "race_date",
+            "cv_window_policy",
+            "train_window_years",
+            "holdout_year",
+            "window_definition",
             "target_label",
             "p_top3",
         ]
@@ -377,6 +416,14 @@ def _estimate_pair_probs_from_horse(
         raise SystemExit(f"Missing required horse columns for p_wide estimation: {missing}")
 
     outputs: list[pd.DataFrame] = []
+    carry_cols = [
+        "valid_year",
+        "race_date",
+        "cv_window_policy",
+        "train_window_years",
+        "holdout_year",
+        "window_definition",
+    ]
 
     if "fold_id" in horse_frame.columns:
         for fold_id, sub in horse_frame.groupby("fold_id", sort=False):
@@ -391,14 +438,18 @@ def _estimate_pair_probs_from_horse(
             if pair.empty:
                 continue
             pair["fold_id"] = int(fold_id)
-            if "valid_year" in sub.columns:
-                year_map = (
-                    sub[["race_id", "valid_year"]]
+            for column in carry_cols:
+                if column not in sub.columns:
+                    continue
+                value_map = (
+                    sub[["race_id", column]]
                     .drop_duplicates(["race_id"])
-                    .set_index("race_id")["valid_year"]
+                    .set_index("race_id")[column]
                     .to_dict()
                 )
-                pair["valid_year"] = pair["race_id"].map(year_map).astype(int)
+                pair[column] = pair["race_id"].map(value_map)
+                if column in {"valid_year", "train_window_years", "holdout_year"}:
+                    pair[column] = pair[column].astype(int)
             outputs.append(pair)
     else:
         pair = estimate_p_wide_by_race(
@@ -409,14 +460,18 @@ def _estimate_pair_probs_from_horse(
             top_k=int(top_k),
         )
         if not pair.empty:
-            if "valid_year" in horse_frame.columns:
-                year_map = (
-                    horse_frame[["race_id", "valid_year"]]
+            for column in carry_cols:
+                if column not in horse_frame.columns:
+                    continue
+                value_map = (
+                    horse_frame[["race_id", column]]
                     .drop_duplicates(["race_id"])
-                    .set_index("race_id")["valid_year"]
+                    .set_index("race_id")[column]
                     .to_dict()
                 )
-                pair["valid_year"] = pair["race_id"].map(year_map).astype(int)
+                pair[column] = pair["race_id"].map(value_map)
+                if column in {"valid_year", "train_window_years", "holdout_year"}:
+                    pair[column] = pair[column].astype(int)
             outputs.append(pair)
 
     if not outputs:
@@ -431,8 +486,9 @@ def _estimate_pair_probs_from_horse(
         ]
         if "fold_id" in horse_frame.columns:
             base_cols.append("fold_id")
-        if "valid_year" in horse_frame.columns:
-            base_cols.append("valid_year")
+        for column in carry_cols:
+            if column in horse_frame.columns:
+                base_cols.append(column)
         return pd.DataFrame(columns=base_cols)
 
     out = pd.concat(outputs, axis=0, ignore_index=True)
@@ -921,6 +977,35 @@ def _build_backtest_report(
         summary["logloss"] = round(float(logloss_value), 4) if logloss_value is not None else None
         summary["auc"] = round(float(auc_value), 4) if auc_value is not None else None
 
+    def extract_single_value(column: str) -> Any:
+        for source in (pair_probs, metric_frame):
+            if column not in source.columns:
+                continue
+            values = pd.Series(source[column]).dropna().unique().tolist()
+            if not values:
+                continue
+            if len(values) > 1:
+                raise SystemExit(
+                    "Mixed cv policy metadata detected in backtest input for "
+                    f"'{column}': {values[:5]}"
+                )
+            return values[0]
+        return None
+
+    train_window_years = extract_single_value("train_window_years")
+    window_definition = extract_single_value("window_definition")
+    cv_window_policy = extract_single_value("cv_window_policy")
+    policy_holdout_year = extract_single_value("holdout_year")
+    valid_years = (
+        sorted(pair_probs["valid_year"].dropna().astype(int).unique().tolist())
+        if "valid_year" in pair_probs.columns
+        else selected_years
+    )
+    if cv_window_policy is None and train_window_years is not None:
+        cv_window_policy = DEFAULT_CV_WINDOW_POLICY
+    if window_definition is None and train_window_years is not None:
+        window_definition = make_window_definition(int(train_window_years))
+
     payload = {
         "summary": summary,
         "monthly": monthly_rows,
@@ -938,7 +1023,16 @@ def _build_backtest_report(
             "selected_races": int(pair_probs["race_id"].nunique()),
             "available_years_after_holdout_filter": available_years,
             "selected_years": selected_years,
-            "holdout_year": int(args.holdout_year),
+            "input_filter_holdout_year": int(args.holdout_year),
+        },
+        "cv_policy": {
+            "cv_window_policy": cv_window_policy,
+            "train_window_years": (
+                int(train_window_years) if train_window_years is not None else None
+            ),
+            "valid_years": list(map(int, valid_years)),
+            "holdout_year": int(policy_holdout_year) if policy_holdout_year is not None else None,
+            "window_definition": window_definition,
         },
         "config": {
             "pl": {

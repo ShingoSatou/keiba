@@ -19,30 +19,43 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts_v3.train_binary_v3_common import (
+    DEFAULT_CV_WINDOW_POLICY,
+    DEFAULT_TRAIN_WINDOW_YEARS,
+    attach_cv_policy_columns,
+    build_cv_policy_payload,
+    build_fixed_window_year_folds,
     compute_binary_metrics,
     hash_files,
+    make_window_definition,
     resolve_path,
     save_json,
+    select_recent_window_years,
 )
-from scripts_v3.v3_common import build_rolling_year_folds  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_HOLDOUT_YEAR = 2025
-DEFAULT_TRAIN_WINDOW_YEARS = 5
 DEFAULT_SEED = 42
 METHOD_CHOICES = ("logreg", "isotonic")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train odds->win probability calibrators with rolling yearly OOF (v3)."
+        description=(
+            "Train odds->win probability calibrators with "
+            "fixed-length sliding yearly OOF (v3)."
+        )
     )
     parser.add_argument("--input", default="data/features_v3.parquet")
     parser.add_argument("--score-cols", default="p_win_odds_t10_norm,p_win_odds_final_norm")
     parser.add_argument("--methods", default="logreg,isotonic")
     parser.add_argument("--holdout-year", type=int, default=DEFAULT_HOLDOUT_YEAR)
-    parser.add_argument("--train-window-years", type=int, default=DEFAULT_TRAIN_WINDOW_YEARS)
+    parser.add_argument(
+        "--train-window-years",
+        type=int,
+        default=DEFAULT_TRAIN_WINDOW_YEARS,
+        help="The v3 standard comparison condition is fixed_sliding with 4 years.",
+    )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--clip-eps", type=float, default=1e-6)
     parser.add_argument("--n-bins", type=int, default=10)
@@ -138,14 +151,33 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("No train rows after holdout exclusion")
 
     years = sorted(train_frame["year"].unique().tolist())
-    folds = build_rolling_year_folds(
+    folds = build_fixed_window_year_folds(
+        years,
+        window_years=int(args.train_window_years),
+        holdout_year=int(args.holdout_year),
+    )
+    if not folds:
+        max_window = max(1, len(years) - 1)
+        raise SystemExit(
+            "No odds calibration CV folds available under the fixed_sliding policy "
+            f"(available_years={years}, try --train-window-years <= {max_window})"
+        )
+    recent_years = select_recent_window_years(
         years,
         train_window_years=int(args.train_window_years),
         holdout_year=int(args.holdout_year),
     )
+    recent_train_frame = train_frame[train_frame["year"].isin(recent_years)].copy()
 
     oof = train_frame[["race_id", "horse_id", "horse_no", "race_date", "year", "y_win"]].copy()
     oof = oof.rename(columns={"year": "valid_year"})
+    oof = attach_cv_policy_columns(
+        oof,
+        train_window_years=int(args.train_window_years),
+        holdout_year=int(args.holdout_year),
+        cv_window_policy=DEFAULT_CV_WINDOW_POLICY,
+        window_definition=make_window_definition(int(args.train_window_years)),
+    )
 
     fold_metrics: list[dict[str, Any]] = []
     variant_models: dict[str, Any] = {}
@@ -180,6 +212,12 @@ def main(argv: list[str] | None = None) -> int:
                             "brier": None,
                             "auc": None,
                             "ece": None,
+                            "cv_window_policy": DEFAULT_CV_WINDOW_POLICY,
+                            "train_window_years": int(args.train_window_years),
+                            "holdout_year": int(args.holdout_year),
+                            "window_definition": make_window_definition(
+                                int(args.train_window_years)
+                            ),
                         }
                     )
                     continue
@@ -218,11 +256,17 @@ def main(argv: list[str] | None = None) -> int:
                         "brier": metrics["brier"],
                         "auc": metrics["auc"],
                         "ece": metrics["ece"],
+                        "cv_window_policy": DEFAULT_CV_WINDOW_POLICY,
+                        "train_window_years": int(args.train_window_years),
+                        "holdout_year": int(args.holdout_year),
+                        "window_definition": make_window_definition(
+                            int(args.train_window_years)
+                        ),
                         "reliability": metrics["reliability"],
                     }
                 )
 
-            full_sub = train_frame[train_frame[score_col].notna()].copy()
+            full_sub = recent_train_frame[recent_train_frame[score_col].notna()].copy()
             if full_sub.empty:
                 continue
             full_model = _fit_calibrator(
@@ -248,6 +292,13 @@ def main(argv: list[str] | None = None) -> int:
             "score_cols": score_cols,
             "methods": methods,
             "clip_eps": float(args.clip_eps),
+            "cv_policy": build_cv_policy_payload(
+                folds,
+                train_window_years=int(args.train_window_years),
+                holdout_year=int(args.holdout_year),
+                cv_window_policy=DEFAULT_CV_WINDOW_POLICY,
+            ),
+            "final_model_train_years": recent_years,
             "models": variant_models,
         },
         model_output,
@@ -269,8 +320,15 @@ def main(argv: list[str] | None = None) -> int:
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "input_path": str(input_path),
         "oof_path": str(oof_output),
+        "cv_policy": build_cv_policy_payload(
+            folds,
+            train_window_years=int(args.train_window_years),
+            holdout_year=int(args.holdout_year),
+            cv_window_policy=DEFAULT_CV_WINDOW_POLICY,
+        ),
         "holdout_year": int(args.holdout_year),
         "train_window_years": int(args.train_window_years),
+        "cv_window_policy": DEFAULT_CV_WINDOW_POLICY,
         "score_cols": score_cols,
         "methods": methods,
         "clip_eps": float(args.clip_eps),
@@ -290,6 +348,12 @@ def main(argv: list[str] | None = None) -> int:
     meta_payload = {
         "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "input_path": str(input_path),
+        "cv_policy": build_cv_policy_payload(
+            folds,
+            train_window_years=int(args.train_window_years),
+            holdout_year=int(args.holdout_year),
+            cv_window_policy=DEFAULT_CV_WINDOW_POLICY,
+        ),
         "output_paths": {
             "oof": str(oof_output),
             "metrics": str(metrics_output),
@@ -298,6 +362,7 @@ def main(argv: list[str] | None = None) -> int:
         "score_cols": score_cols,
         "methods": methods,
         "model_columns": variant_cols,
+        "final_model_train_years": recent_years,
         "code_hash": hash_files([Path(__file__)]),
     }
     save_json(meta_output, meta_payload)

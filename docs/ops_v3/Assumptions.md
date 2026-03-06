@@ -1,7 +1,10 @@
 # Assumptions（v3実装時の推定前提）
 
-1. Rolling年次CVのロジックは v2 `build_rolling_year_folds()` をそのまま利用し、デフォルト `train_window_years=5` は可変パラメータとして扱う。
-   - ただし PL は OOF行だけを使うため有効年が短くなるケースがあり、実行デフォルトを `3` にしている。
+1. v3 の標準評価条件は `cv_window_policy=fixed_sliding` / `train_window_years=4` とする。
+   - valid year ごとに直前4年のみを train に使う。
+   - 4年未満しか履歴がない初期年は fold を作らずスキップする。
+   - holdout year（例: `2025`）は将来年として従来どおり使ってよい。
+   - この条件は今後のモデル改善比較の基準であり、過去 run report の窓条件とは直接比較しない場合がある。
 2. Benter R* の `beta` 最適化は fold train 内の in-sample 予測（trainでfitした分類器の train_pred）で実施する。
 3. `core.o1_win` の `win_odds_x10` が `NULL/0/負` の場合は欠損として扱う。
 4. binary / PL ともに `scripts_v3/feature_registry_v3.py` の whitelist / contract を使う。

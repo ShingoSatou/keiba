@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from scripts_v3.cv_policy_v3 import FoldSpec
 from scripts_v3.feature_registry_v3 import (
     BINARY_ENTITY_ID_FEATURES,
     FEATURE_MANIFEST_VERSION,
@@ -119,6 +120,7 @@ def test_binary_can_opt_in_entity_id_features() -> None:
 
 def test_binary_manifest_and_meta_include_feature_contract_fields() -> None:
     args = parse_args([])
+    folds = [FoldSpec(fold_id=1, train_years=(2020, 2021, 2022, 2023), valid_year=2024)]
     feat_cols = get_binary_feature_columns(
         _sample_frame(),
         include_entity_ids=False,
@@ -132,9 +134,11 @@ def test_binary_manifest_and_meta_include_feature_contract_fields() -> None:
         categorical_cols=categorical_cols,
         include_entity_id_features=False,
         forbidden_feature_check_passed=True,
+        valid_years=[2024],
     )
     meta = _build_meta_payload(
         args=args,
+        folds=folds,
         label_col="y_win",
         pred_col="p_win_lgbm",
         input_path=Path("data/features_v3.parquet"),
@@ -157,8 +161,14 @@ def test_binary_manifest_and_meta_include_feature_contract_fields() -> None:
     )
 
     for payload in (manifest, meta):
+        assert payload["cv_policy"]["cv_window_policy"] == "fixed_sliding"
+        assert payload["cv_policy"]["train_window_years"] == 4
+        assert payload["cv_policy"]["valid_years"] == [2024]
+        assert payload["cv_policy"]["holdout_year"] == 2025
         assert payload["operational_mode"] == "t10_only"
         assert payload["include_entity_id_features"] is False
         assert payload["feature_columns"] == feat_cols
         assert payload["forbidden_feature_check_passed"] is True
         assert payload["feature_manifest_version"] == FEATURE_MANIFEST_VERSION
+
+    assert args.train_window_years == 4
