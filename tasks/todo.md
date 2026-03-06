@@ -13,12 +13,12 @@
 
 | id | title | version | status | file |
 |---|---|---|---|---|
-| `2026-03-07_v3-pl-meta-default-pr` | v3 PL meta_default 契約移行の PR 作成 | v3 | `active` | [task](./active/2026-03-07_v3-pl-meta-default-pr.md) |
 
 ## Done
 
 | id | title | version | status | file |
 |---|---|---|---|---|
+| `2026-03-07_v3-pl-meta-default-pr` | v3 PL meta_default 契約移行の PR 作成 | v3 | `done` | [task](./done/2026/2026-03-07_v3-pl-meta-default-pr.md) |
 | `2026-03-04_backtest-wide-v3-pl-alignment` | v3ワイドROIをPL出力整合にする | v3 | `done` | [task](./done/2026/2026-03-04_backtest-wide-v3-pl-alignment.md) |
 | `2026-03-06_v3-pl-inference-test-gap-analysis` | v3 PL/inference テストギャップ調査 | v3 | `done` | [task](./done/2026/2026-03-06_v3-pl-inference-test-gap-analysis.md) |
 | `2026-03-06_v3-pl-meta-input-interface-survey` | v3 PL 学習・推論・bundle/meta interface 調査 | v3 | `done` | [task](./done/2026/2026-03-06_v3-pl-meta-input-interface-survey.md) |
