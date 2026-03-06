@@ -13,7 +13,7 @@
 
 | id | title | version | status | file |
 |---|---|---|---|---|
-| - | 進行中タスクなし | - | - | - |
+| `2026-03-06_fix-ci-for-pr33` | PR #33 の CI 失敗修正 | v3 | `active` | [task](./active/2026-03-06_fix-ci-for-pr33.md) |
 
 ## Done
 

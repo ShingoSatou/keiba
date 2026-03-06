@@ -157,13 +157,11 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--n-bins must be > 1")
     if not (0.0 < float(args.benter_eps) < 0.5):
         raise SystemExit("--benter-eps must be in (0, 0.5)")
-    if (
-        bool(args.include_entity_id_features)
-        and bool(args.drop_entity_id_features)
-    ):
+    if bool(args.include_entity_id_features) and bool(args.drop_entity_id_features):
         raise SystemExit(
             "--include-entity-id-features and --drop-entity-id-features cannot be used together"
         )
+
 
 def _include_entity_id_features(args: argparse.Namespace) -> bool:
     if bool(args.drop_entity_id_features):

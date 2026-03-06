@@ -199,9 +199,7 @@ def validate_feature_contract(
 
     if operational_mode == "t10_only":
         forbidden_final = [
-            col
-            for col in feature_cols
-            if col in FORBIDDEN_FINAL_ODDS_FEATURES or "_final_" in col
+            col for col in feature_cols if col in FORBIDDEN_FINAL_ODDS_FEATURES or "_final_" in col
         ]
         if forbidden_final:
             raise ValueError(
