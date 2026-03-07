@@ -63,10 +63,7 @@ def _assert_unique_keys(frame: pd.DataFrame, *, label: str) -> None:
     duplicated = frame.duplicated(TE_JOIN_KEYS, keep=False)
     if duplicated.any():
         sample = (
-            frame.loc[duplicated, TE_JOIN_KEYS]
-            .drop_duplicates()
-            .head(5)
-            .to_dict(orient="records")
+            frame.loc[duplicated, TE_JOIN_KEYS].drop_duplicates().head(5).to_dict(orient="records")
         )
         raise ValueError(f"{label} has duplicate join keys: sample={sample}")
 

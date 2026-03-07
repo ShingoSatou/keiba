@@ -557,14 +557,12 @@ def merge_odds_features(
             f"odds_place_t{minutes}_upper",
         )
     out["place_width_log_ratio"] = out["place_width_log_ratio_t10"]
-    out["d_place_mid_10_20"] = (
-        pd.to_numeric(out["place_mid_prob_t10"], errors="coerce")
-        - pd.to_numeric(out["place_mid_prob_t20"], errors="coerce")
-    )
-    out["d_place_width_10_20"] = (
-        pd.to_numeric(out["place_width_log_ratio_t10"], errors="coerce")
-        - pd.to_numeric(out["place_width_log_ratio_t20"], errors="coerce")
-    )
+    out["d_place_mid_10_20"] = pd.to_numeric(
+        out["place_mid_prob_t10"], errors="coerce"
+    ) - pd.to_numeric(out["place_mid_prob_t20"], errors="coerce")
+    out["d_place_width_10_20"] = pd.to_numeric(
+        out["place_width_log_ratio_t10"], errors="coerce"
+    ) - pd.to_numeric(out["place_width_log_ratio_t20"], errors="coerce")
     return out
 
 

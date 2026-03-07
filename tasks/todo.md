@@ -19,6 +19,7 @@
 
 | id | title | version | status | file |
 |---|---|---|---|---|
+| `2026-03-07_v3-ci-format-fix-pr41` | PR #41 の CI format failure 修正 | v3 | `done` | [task](./done/2026/2026-03-07_v3-ci-format-fix-pr41.md) |
 | `2026-03-07_v3-docs-pr` | v3 docs 更新と PR 作成 | v3 | `done` | [task](./done/2026/2026-03-07_v3-docs-pr.md) |
 | `2026-03-07_v3-te-build-entrypoint` | v3 TE 生成入口の固定化 | v3 | `done` | [task](./done/2026/2026-03-07_v3-te-build-entrypoint.md) |
 | `2026-03-07_v3-binary6-retrain-end-to-end` | v3 binary 6本再学習と end-to-end 検証 | v3 | `done` | [task](./done/2026/2026-03-07_v3-binary6-retrain-end-to-end.md) |
