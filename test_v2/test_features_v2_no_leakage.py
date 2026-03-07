@@ -8,6 +8,7 @@ from scripts_v2.build_features_v2 import (
     _add_lag_features,
     _apply_segment_filter,
     _compute_recent_entity_target_mean,
+    _resolve_target_label_prior_mean,
     _time_window_stats_by_group,
     assert_no_future_leakage,
     assert_sorted,
@@ -131,3 +132,17 @@ def test_target_encoding_excludes_current_date():
     ]
     assert len(day2_j100) == 1
     assert float(day2_j100.iloc[0]["jockey_target_label_mean_6m"]) > 0.5
+
+
+def test_target_encoding_prior_mean_excludes_future_dates():
+    df = pd.DataFrame(
+        {
+            "race_date": pd.to_datetime(
+                ["2024-01-01", "2024-01-02", "2024-01-03", "2024-02-01"]
+            ).date,
+            "target_label": [0, 3, 1, 3],
+            "field_size": [12, 12, 12, 12],
+        }
+    )
+    prior = _resolve_target_label_prior_mean(df, from_date=pd.to_datetime("2024-01-03").date())
+    assert prior == pytest.approx(1.5)

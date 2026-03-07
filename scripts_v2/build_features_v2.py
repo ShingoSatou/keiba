@@ -372,6 +372,20 @@ def _compute_recent_entity_target_mean(
     return data.drop(columns=["race_date_dt", "mean"])
 
 
+def _resolve_target_label_prior_mean(df: pd.DataFrame, *, from_date: date) -> float:
+    race_date = pd.to_datetime(df["race_date"], errors="coerce")
+    target = pd.to_numeric(df["target_label"], errors="coerce")
+    history = target[race_date < pd.Timestamp(from_date)].dropna()
+    if not history.empty:
+        return float(history.mean())
+
+    field_size = pd.to_numeric(df.get("field_size"), errors="coerce")
+    field_prior = (6.0 / field_size.replace(0, np.nan)).replace([np.inf, -np.inf], np.nan)
+    if field_prior.notna().any():
+        return float(field_prior.mean())
+    return 0.0
+
+
 def _add_relative_features(df: pd.DataFrame, *, with_te: bool) -> pd.DataFrame:
     race_group = df.groupby("race_id", sort=False)
     df["rel_lag1_speed_index_z"] = race_group["lag1_speed_index"].transform(_zscore)
@@ -724,7 +738,7 @@ def build_features_dataframe(
     df = _compute_recent_entity_rate(df, "jockey_key", "jockey_top3_rate_6m")
     df = _compute_recent_entity_rate(df, "trainer_key", "trainer_top3_rate_6m")
     if with_te:
-        prior_label_mean = float(pd.to_numeric(df["target_label"], errors="coerce").mean())
+        prior_label_mean = _resolve_target_label_prior_mean(df, from_date=from_date)
         df = _compute_recent_entity_target_mean(
             df,
             "jockey_key",

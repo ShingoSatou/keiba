@@ -58,6 +58,29 @@ BINARY_T10_ODDS_FEATURES = [
     "p_win_odds_t10_norm",
 ]
 BINARY_ENTITY_ID_FEATURES = ["jockey_key", "trainer_key"]
+BINARY_NON_FEATURE_COLUMNS = [
+    "race_id",
+    "horse_id",
+    "horse_no",
+    "year",
+    "race_date",
+    "race_datetime",
+    "t_race",
+    "start_time",
+    "holdout_year",
+    "train_window_years",
+    "cv_window_policy",
+    "window_definition",
+]
+BINARY_TE_EXCLUDED_PREFIXES = ("p_", "score_", "c_", "z_", "pl_", "ranker_")
+BINARY_TE_EXCLUDED_SUFFIXES = ("_id", "_key", "_dt", "_date", "_time", "_year", "_ymd", "_hm")
+BINARY_TE_EXCLUDED_SUBSTRINGS = (
+    "_final_",
+    "datetime",
+    "announce_dt",
+    "create_time",
+    "create_datetime",
+)
 
 STACKER_CONTEXT_FEATURES = [
     "track_code",
@@ -209,9 +232,7 @@ def _validate_pl_feature_profile(feature_profile: str) -> None:
 
 def _validate_stacker_task(task: str) -> None:
     if task not in STACKER_TASK_CHOICES:
-        raise ValueError(
-            f"Unknown stacker task={task!r}. Expected one of {STACKER_TASK_CHOICES}."
-        )
+        raise ValueError(f"Unknown stacker task={task!r}. Expected one of {STACKER_TASK_CHOICES}.")
 
 
 def _dedupe_existing(frame: pd.DataFrame, cols: list[str]) -> list[str]:
@@ -226,10 +247,77 @@ def _dedupe_existing(frame: pd.DataFrame, cols: list[str]) -> list[str]:
     return deduped
 
 
+def _is_binary_te_candidate_column(column: str) -> bool:
+    lowered = str(column).lower()
+    return (
+        "target" in lowered
+        or lowered.startswith("te_")
+        or "_te_" in lowered
+        or lowered.endswith("_te")
+    )
+
+
+def _is_safe_binary_te_extra_column(
+    column: str,
+    *,
+    base_contract_columns: set[str],
+) -> bool:
+    lowered = str(column).lower()
+    if column in base_contract_columns:
+        return False
+    if column in BINARY_NON_FEATURE_COLUMNS:
+        return False
+    if column in POST_RACE_FORBIDDEN_FEATURES:
+        return False
+    if column in FORBIDDEN_FINAL_ODDS_FEATURES:
+        return False
+    if column in BINARY_ENTITY_ID_FEATURES:
+        return False
+    if not _is_binary_te_candidate_column(column):
+        return False
+    if lowered.startswith(BINARY_TE_EXCLUDED_PREFIXES):
+        return False
+    if lowered.endswith(BINARY_TE_EXCLUDED_SUFFIXES):
+        return False
+    if lowered.startswith("odds_") or "odds_" in lowered:
+        return False
+    if any(token in lowered for token in BINARY_TE_EXCLUDED_SUBSTRINGS):
+        return False
+    return True
+
+
+def get_binary_safe_te_feature_columns(
+    frame: pd.DataFrame,
+    *,
+    operational_mode: str,
+    include_entity_ids: bool = False,
+) -> list[str]:
+    _validate_operational_mode(operational_mode)
+
+    base_contract_columns = [*BINARY_BASE_FEATURES, *BINARY_T10_ODDS_FEATURES]
+    if operational_mode == "includes_final":
+        base_contract_columns.extend(FINAL_ODDS_BASE_FEATURES)
+    if include_entity_ids:
+        base_contract_columns.extend(BINARY_ENTITY_ID_FEATURES)
+
+    allowed_set = set(base_contract_columns)
+    extras: list[str] = []
+    seen: set[str] = set()
+    for raw_column in frame.columns:
+        column = str(raw_column)
+        if column in seen:
+            continue
+        seen.add(column)
+        if _is_safe_binary_te_extra_column(column, base_contract_columns=allowed_set):
+            extras.append(column)
+    return extras
+
+
 def get_binary_feature_columns(
     frame: pd.DataFrame,
     include_entity_ids: bool,
     operational_mode: str,
+    include_te_features: bool = False,
 ) -> list[str]:
     _validate_operational_mode(operational_mode)
 
@@ -238,6 +326,14 @@ def get_binary_feature_columns(
         cols.extend(FINAL_ODDS_BASE_FEATURES)
     if include_entity_ids:
         cols.extend(BINARY_ENTITY_ID_FEATURES)
+    if include_te_features:
+        cols.extend(
+            get_binary_safe_te_feature_columns(
+                frame,
+                operational_mode=operational_mode,
+                include_entity_ids=include_entity_ids,
+            )
+        )
 
     feature_cols = _dedupe_existing(frame, cols)
     validate_feature_contract(
@@ -376,6 +472,7 @@ def validate_feature_contract(
 __all__ = [
     "BINARY_BASE_FEATURES",
     "BINARY_ENTITY_ID_FEATURES",
+    "BINARY_NON_FEATURE_COLUMNS",
     "BINARY_T10_ODDS_FEATURES",
     "FEATURE_MANIFEST_VERSION",
     "FINAL_ODDS_BASE_FEATURES",
@@ -399,6 +496,7 @@ __all__ = [
     "STACKER_TASK_CHOICES",
     "STACKER_WIN_ODDS_FEATURES",
     "get_binary_feature_columns",
+    "get_binary_safe_te_feature_columns",
     "get_pl_feature_columns",
     "get_pl_required_pred_columns",
     "get_stacker_feature_columns",

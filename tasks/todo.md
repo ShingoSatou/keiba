@@ -18,6 +18,10 @@
 
 | id | title | version | status | file |
 |---|---|---|---|---|
+| `2026-03-07_v3-optuna-boundary-doc` | v3 binary Optuna 境界張り付き所見のドキュメント化 | v3 | `done` | [task](./done/2026/2026-03-07_v3-optuna-boundary-doc.md) |
+| `2026-03-07_v3-te-leakage-audit-fix` | v3 TE リーク監査と必要時の修正・xgb 再学習 | v3 | `done` | [task](./done/2026/2026-03-07_v3-te-leakage-audit-fix.md) |
+| `2026-03-07_v3-binary-optuna-tuner` | v3 binary Optuna tuner 追加 | v3 | `done` | [task](./done/2026/2026-03-07_v3-binary-optuna-tuner.md) |
+| `2026-03-07_v3-binary-optuna-full-tuning` | v3 binary full tuning 実行と tuned default 反映 | v3 | `done` | [task](./done/2026/2026-03-07_v3-binary-optuna-full-tuning.md) |
 | `2026-03-07_v3-strict-stacker-retrain-eval` | v3 strict temporal stacker の full retrain と評価 | v3 | `done` | [task](./done/2026/2026-03-07_v3-strict-stacker-retrain-eval.md) |
 | `2026-03-07_v3-strict-stacker-pl-architecture` | v3 strict temporal stacker 導入と PL 責務分離 | v3 | `done` | [task](./done/2026/2026-03-07_v3-strict-stacker-pl-architecture.md) |
 | `2026-03-07_v2-o1-place-ci-fix` | v2 O1 複勝時系列 PR の CI format failure 修正 | v2 | `done` | [task](./done/2026/2026-03-07_v2-o1-place-ci-fix.md) |
