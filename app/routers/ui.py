@@ -22,7 +22,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ui", tags=["ui"])
 
 # backtest_result.json のパス（プロジェクトルート/data/）
-_DATA_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "backtest_result.json"
+_DATA_PATH = (
+    Path(__file__).resolve().parent.parent.parent
+    / "data"
+    / "backtest_v3"
+    / "backtest_wide_v3_direct.json"
+)
 
 # ページネーションのデフォルト件数
 _PAGE_SIZE = 30
