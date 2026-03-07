@@ -64,10 +64,11 @@ export default function BetTable() {
                             <tr>
                                 <th>日付</th>
                                 <th>馬名</th>
-                                <th>馬番</th>
-                                <th>P(勝)</th>
+                                <th>組番/馬番</th>
+                                <th>P(的中)</th>
                                 <th>オッズ</th>
                                 <th>EV</th>
+                                <th>ベット額</th>
                                 <th>結果</th>
                                 <th>損益</th>
                             </tr>
@@ -77,7 +78,7 @@ export default function BetTable() {
                                 <tr key={i}>
                                     <td style={{ color: "#8b95b0" }}>{row.race_date}</td>
                                     <td style={{ fontWeight: 500 }}>{row.horse_name}</td>
-                                    <td style={{ color: "#8b95b0" }}>{row.horse_no}番</td>
+                                    <td style={{ color: "#8b95b0" }}>{row.kumiban ? row.kumiban : `${row.horse_no}番`}</td>
                                     <td>{(row.p_win * 100).toFixed(1)}%</td>
                                     <td>{row.odds_final.toFixed(1)}倍</td>
                                     <td
@@ -88,6 +89,7 @@ export default function BetTable() {
                                         {row.ev_profit > 0 ? "+" : ""}
                                         {(row.ev_profit * 100).toFixed(1)}%
                                     </td>
+                                    <td>{row.bet_yen ? `${row.bet_yen.toLocaleString()}円` : "100円"}</td>
                                     <td>
                                         {row.is_hit ? (
                                             <span className="badge badge-hit">✓ 的中</span>

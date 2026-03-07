@@ -27,12 +27,14 @@ export interface BetRow {
     race_id: number;
     horse_name: string;
     horse_no: number;
+    kumiban?: string; // v3 ワイドペア用
     p_win: number;
     odds_final: number;
     ev_profit: number;
     is_hit: boolean;
     payout: number;
     profit: number;
+    bet_yen?: number; // v3 Kellyベットなど動的ベット額
 }
 
 export interface BetsResponse {
