@@ -7,9 +7,7 @@ from scripts_v3.feature_registry_v3 import (
     BINARY_ENTITY_ID_FEATURES,
     FORBIDDEN_FINAL_ODDS_FEATURES,
     PL_META_DEFAULT_ODDS_FEATURES,
-    PL_REQUIRED_PRED_FEATURES,
     PL_REQUIRED_PRED_FEATURES_META,
-    PL_REQUIRED_PRED_FEATURES_RAW_LEGACY,
     PL_REQUIRED_PRED_FEATURES_STACK,
     PL_STACK_CORE_FEATURES,
     PL_STACK_INTERACTION_FEATURES,
@@ -144,10 +142,11 @@ def test_registry_functions_return_unique_columns() -> None:
         include_entity_ids=False,
         operational_mode="t10_only",
     )
+    required_pred_cols = [*PL_REQUIRED_PRED_FEATURES_META, *PL_META_DEFAULT_ODDS_FEATURES]
     pl_cols = get_pl_feature_columns(
         frame,
-        feature_profile="raw_legacy",
-        required_pred_cols=[*PL_REQUIRED_PRED_FEATURES, "p_win_lgbm"],
+        feature_profile="meta_default",
+        required_pred_cols=required_pred_cols,
         include_context=True,
         include_final_odds=False,
         operational_mode="t10_only",
@@ -167,18 +166,6 @@ def test_meta_default_required_pred_columns_are_compact() -> None:
 def test_stack_default_required_pred_columns_are_compact() -> None:
     required = get_pl_required_pred_columns("stack_default")
     assert required == PL_REQUIRED_PRED_FEATURES_STACK
-
-
-def test_raw_legacy_required_pred_columns_can_append_calibrated_odds() -> None:
-    required = get_pl_required_pred_columns(
-        "raw_legacy",
-        odds_cal_cols=["p_win_odds_t10_norm_cal_isotonic"],
-        include_calibrated_odds_features=True,
-    )
-    assert required == [
-        *PL_REQUIRED_PRED_FEATURES_RAW_LEGACY,
-        "p_win_odds_t10_norm_cal_isotonic",
-    ]
 
 
 def test_stacker_feature_columns_are_task_specific() -> None:

@@ -11,11 +11,9 @@ from scripts_v3.feature_registry_v3 import (
     PL_CONTEXT_FEATURES_SMALL,
     PL_META_DEFAULT_ODDS_FEATURES,
     PL_REQUIRED_PRED_FEATURES_META,
-    PL_REQUIRED_PRED_FEATURES_RAW_LEGACY,
     PL_REQUIRED_PRED_FEATURES_STACK,
     PL_STACK_CORE_FEATURES,
     PL_STACK_INTERACTION_FEATURES,
-    PL_T10_ODDS_FEATURES,
 )
 from scripts_v3.pl_v3_common import materialize_stack_default_pl_features
 from scripts_v3.train_pl_v3 import (
@@ -106,38 +104,29 @@ def test_pl_meta_default_contract_is_compact() -> None:
     )
 
     assert feat_cols[: len(required_pred_cols)] == required_pred_cols
-    assert all(col not in feat_cols for col in PL_T10_ODDS_FEATURES if col != "p_win_odds_t10_norm")
+    assert "odds_win_t10" not in feat_cols
+    assert "odds_t10_data_kbn" not in feat_cols
+    assert "p_win_odds_t10_raw" not in feat_cols
     assert all(col in feat_cols for col in PL_CONTEXT_FEATURES_SMALL)
     assert all(col not in feat_cols for col in FINAL_ODDS_BASE_FEATURES)
-
-
-def test_pl_raw_legacy_can_include_final_odds_only_when_requested() -> None:
-    feat_cols = _collect_pl_feature_columns(
-        _sample_frame(),
-        feature_profile="raw_legacy",
-        required_pred_cols=PL_REQUIRED_PRED_FEATURES_RAW_LEGACY,
-        include_final_odds=True,
-        operational_mode="includes_final",
-    )
-
-    assert all(col in feat_cols for col in FINAL_ODDS_BASE_FEATURES)
 
 
 def test_pl_extra_numeric_columns_do_not_expand_feature_list() -> None:
     frame = _sample_frame()
     with_extra = frame.assign(extra_numeric_probe_2=123.0, extra_numeric_probe_3=-5.0)
 
+    required_pred_cols = [*PL_REQUIRED_PRED_FEATURES_META, *PL_META_DEFAULT_ODDS_FEATURES]
     base_cols = _collect_pl_feature_columns(
         frame,
-        feature_profile="raw_legacy",
-        required_pred_cols=PL_REQUIRED_PRED_FEATURES_RAW_LEGACY,
+        feature_profile="meta_default",
+        required_pred_cols=required_pred_cols,
         include_final_odds=False,
         operational_mode="t10_only",
     )
     extra_cols = _collect_pl_feature_columns(
         with_extra,
-        feature_profile="raw_legacy",
-        required_pred_cols=PL_REQUIRED_PRED_FEATURES_RAW_LEGACY,
+        feature_profile="meta_default",
+        required_pred_cols=required_pred_cols,
         include_final_odds=False,
         operational_mode="t10_only",
     )
@@ -213,12 +202,8 @@ def test_pl_artifact_and_meta_include_strict_temporal_stacker_metadata() -> None
 
 def test_legacy_profiles_use_suffix_paths() -> None:
     meta_args = parse_args(["--pl-feature-profile", "meta_default"])
-    raw_args = parse_args(["--pl-feature-profile", "raw_legacy"])
 
     meta_outputs = _resolve_output_paths(meta_args)
-    raw_outputs = _resolve_output_paths(raw_args)
 
     assert str(meta_outputs["oof"]).endswith("pl_v3_oof_meta_default.parquet")
     assert str(meta_outputs["metrics"]).endswith("pl_v3_cv_metrics_meta_default.json")
-    assert str(raw_outputs["oof"]).endswith("pl_v3_oof_raw_legacy.parquet")
-    assert str(raw_outputs["holdout"]).endswith("pl_v3_holdout_2025_pred_raw_legacy.parquet")

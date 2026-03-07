@@ -182,59 +182,6 @@ def test_predict_race_meta_default_path_builds_meta_columns(tmp_path: Path) -> N
     assert out["p_place_meta"].between(0.0, 1.0).all()
 
 
-def test_predict_race_raw_legacy_path_does_not_require_meta_models(tmp_path: Path) -> None:
-    input_path = tmp_path / "race.parquet"
-    output_path = tmp_path / "pred.parquet"
-    frame = _input_frame()
-    frame.to_parquet(input_path, index=False)
-
-    pl_model = tmp_path / "pl_raw.joblib"
-    joblib.dump(
-        _pl_artifact(
-            [
-                "p_win_lgbm",
-                "p_win_xgb",
-                "p_win_cat",
-                "p_place_lgbm",
-                "p_place_xgb",
-                "p_place_cat",
-                "odds_win_t10",
-                "odds_t10_data_kbn",
-                "p_win_odds_t10_raw",
-                "p_win_odds_t10_norm",
-                "field_size",
-                "surface",
-                "distance_m",
-                "going",
-                "apt_same_distance_top3_rate_2y",
-                "apt_same_going_top3_rate_2y",
-                "rel_lag1_speed_index_z",
-                "rel_meta_tm_score_z",
-            ],
-            profile="raw_legacy",
-        ),
-        pl_model,
-    )
-
-    rc = main(
-        [
-            "--input",
-            str(input_path),
-            "--pl-model",
-            str(pl_model),
-            "--skip-base-model-inference",
-            "--output",
-            str(output_path),
-        ]
-    )
-
-    assert rc == 0
-    out = pd.read_parquet(output_path)
-    assert "pl_score" in out.columns
-    assert "p_top3" in out.columns
-    assert "p_win_meta" not in out.columns
-
-
 def test_predict_race_stack_default_path_materializes_stack_inputs(tmp_path: Path) -> None:
     input_path = tmp_path / "race_stack.parquet"
     output_path = tmp_path / "pred_stack.parquet"
