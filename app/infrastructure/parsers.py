@@ -1218,9 +1218,7 @@ class OddsTimeSeriesRecord:
         sale_flag_place = _slice_byte_int(
             b_payload, O1_SALE_FLAG_PLACE_START, O1_SALE_FLAG_PLACE_LEN
         )
-        place_pay_key = _slice_byte_int(
-            b_payload, O1_PLACE_PAY_KEY_START, O1_PLACE_PAY_KEY_LEN
-        )
+        place_pay_key = _slice_byte_int(b_payload, O1_PLACE_PAY_KEY_START, O1_PLACE_PAY_KEY_LEN)
 
         # 票数合計
         win_pool_total = _slice_byte_int(b_payload, O1_WIN_POOL_START, O1_WIN_POOL_LEN)
