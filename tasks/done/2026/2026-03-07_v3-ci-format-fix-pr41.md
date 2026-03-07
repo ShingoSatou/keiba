@@ -29,7 +29,7 @@
 - [x] CI failure の原因を確認する
 - [x] format を適用する
 - [x] CI 相当 check をローカルで確認する
-- [ ] fix を push する
+- [x] fix を push する
 
 ## 確認結果
 
@@ -44,6 +44,8 @@
 - `gh run view 22797021450 --job 66133105094 --log-failed`
 - `UV_CACHE_DIR=/tmp/uv-cache uv run ruff format scripts_v3/build_features_v3.py scripts_v3/build_features_v3_te.py scripts_v3/odds_v3_common.py`
 - `bash scripts/check_ci.sh fmt-check`
+- `git commit -m "style(v3): format feature contract scripts"`
+- `git push`
 
 ## 関連ドキュメント
 
