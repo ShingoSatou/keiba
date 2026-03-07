@@ -18,6 +18,10 @@
 
 | id | title | version | status | file |
 |---|---|---|---|---|
+| `2026-03-07_v2-o1-place-ci-fix` | v2 O1 複勝時系列 PR の CI format failure 修正 | v2 | `done` | [task](./done/2026/2026-03-07_v2-o1-place-ci-fix.md) |
+| `2026-03-07_v2-o1-place-pr` | v2 O1 複勝時系列対応の PR 作成 | v2 | `done` | [task](./done/2026/2026-03-07_v2-o1-place-pr.md) |
+| `2026-03-07_v2-o1-place-doc-audit` | v2 O1 複勝時系列対応のドキュメント反映確認 | v2 | `done` | [task](./done/2026/2026-03-07_v2-o1-place-doc-audit.md) |
+| `2026-03-07_v2-o1-place-timeseries-load` | v2 O1 複勝時系列オッズの DB 取り込み拡張 | v2 | `done` | [task](./done/2026/2026-03-07_v2-o1-place-timeseries-load.md) |
 | `2026-03-07_v3-pl-meta-default-pr` | v3 PL meta_default 契約移行の PR 作成 | v3 | `done` | [task](./done/2026/2026-03-07_v3-pl-meta-default-pr.md) |
 | `2026-03-04_backtest-wide-v3-pl-alignment` | v3ワイドROIをPL出力整合にする | v3 | `done` | [task](./done/2026/2026-03-04_backtest-wide-v3-pl-alignment.md) |
 | `2026-03-06_v3-pl-inference-test-gap-analysis` | v3 PL/inference テストギャップ調査 | v3 | `done` | [task](./done/2026/2026-03-06_v3-pl-inference-test-gap-analysis.md) |

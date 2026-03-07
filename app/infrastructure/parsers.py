@@ -962,6 +962,10 @@ O1_RACE_KEY_LEN = 16
 O1_DATA_KBN_START = 2
 O1_DATA_KBN_LEN = 1
 
+# データ作成年月日: 位置4-11 (8バイト)
+O1_DATA_CREATE_YMD_START = 3
+O1_DATA_CREATE_YMD_LEN = 8
+
 # 発表月日時分: 位置28-35 (8バイト) - 時系列キー
 O1_ANNOUNCE_MMDDHHMI_START = 27
 O1_ANNOUNCE_MMDDHHMI_LEN = 8
@@ -970,9 +974,29 @@ O1_ANNOUNCE_MMDDHHMI_LEN = 8
 O1_FIELD_SIZE_START = 35
 O1_FIELD_SIZE_LEN = 2
 
-# 単勝票数合計: 位置38-43 (6バイト) - 百円単位
-O1_WIN_POOL_START = 37
+# 出走頭数: 位置38-39 (2バイト)
+O1_STARTERS_START = 37
+O1_STARTERS_LEN = 2
+
+# 発売フラグ: 位置40-42 (各1バイト)
+O1_SALE_FLAG_WIN_START = 39
+O1_SALE_FLAG_WIN_LEN = 1
+O1_SALE_FLAG_PLACE_START = 40
+O1_SALE_FLAG_PLACE_LEN = 1
+O1_SALE_FLAG_BRACKET_START = 41
+O1_SALE_FLAG_BRACKET_LEN = 1
+
+# 複勝着払キー: 位置43 (1バイト)
+O1_PLACE_PAY_KEY_START = 42
+O1_PLACE_PAY_KEY_LEN = 1
+
+# 単勝票数合計: 位置928-938 (11バイト) - 百円単位
+O1_WIN_POOL_START = 927
 O1_WIN_POOL_LEN = 11
+
+# 複勝票数合計: 位置939-949 (11バイト) - 百円単位
+O1_PLACE_POOL_START = 938
+O1_PLACE_POOL_LEN = 11
 
 # Win Odds ( 単勝 ): 44-1 = 43. Len 8 (2+4+2). Count 28.
 O1_WIN_START = 43
@@ -1150,6 +1174,15 @@ class OddsTimeSeriesRecord:
     win_popularity: int | None
     # ヘッダー情報
     win_pool_total_100yen: int | None
+    data_create_ymd: str | None = None
+    sale_flag_place: int = 0
+    place_pay_key: int = 0
+    place_min_odds_x10: int | None = None
+    place_max_odds_x10: int | None = None
+    place_popularity: int | None = None
+    place_pool_total_100yen: int | None = None
+    has_win_block: bool = False
+    has_place_block: bool = False
 
     @classmethod
     def parse(cls, payload: str, race_id: int = 0) -> list[OddsTimeSeriesRecord]:
@@ -1162,10 +1195,18 @@ class OddsTimeSeriesRecord:
         if len(b_payload) < 962:
             b_payload = b_payload.ljust(962, b" ")
 
-        results = []
-
         # データ区分
         data_kbn = _slice_byte_int(b_payload, O1_DATA_KBN_START, O1_DATA_KBN_LEN)
+        data_create_ymd_raw = _slice_byte_decode(
+            b_payload, O1_DATA_CREATE_YMD_START, O1_DATA_CREATE_YMD_LEN
+        )
+        data_create_ymd = (
+            data_create_ymd_raw
+            if len(data_create_ymd_raw) == 8
+            and data_create_ymd_raw.isdigit()
+            and data_create_ymd_raw != "00000000"
+            else None
+        )
 
         # 発表月日時分
         announce_mmddhhmi = _slice_byte_decode(
@@ -1174,8 +1215,14 @@ class OddsTimeSeriesRecord:
         if not announce_mmddhhmi:
             announce_mmddhhmi = "00000000"
 
+        sale_flag_place = _slice_byte_int(
+            b_payload, O1_SALE_FLAG_PLACE_START, O1_SALE_FLAG_PLACE_LEN
+        )
+        place_pay_key = _slice_byte_int(b_payload, O1_PLACE_PAY_KEY_START, O1_PLACE_PAY_KEY_LEN)
+
         # 票数合計
         win_pool_total = _slice_byte_int(b_payload, O1_WIN_POOL_START, O1_WIN_POOL_LEN)
+        place_pool_total = _slice_byte_int(b_payload, O1_PLACE_POOL_START, O1_PLACE_POOL_LEN)
 
         if race_id == 0:
             race_key = _slice_byte_decode(b_payload, O1_RACE_KEY_START, O1_RACE_KEY_LEN)
@@ -1191,6 +1238,8 @@ class OddsTimeSeriesRecord:
                 except ValueError:
                     pass
 
+        rows_by_horse: dict[int, OddsTimeSeriesRecord] = {}
+
         # Win Odds (28 horses)
         for i in range(O1_WIN_COUNT):
             offset = O1_WIN_START + i * O1_WIN_BLOCK_LEN
@@ -1199,19 +1248,55 @@ class OddsTimeSeriesRecord:
             pop = _slice_byte_maskable_int(b_payload, offset + 6, 2)
 
             if h_no and h_no > 0:
-                results.append(
-                    cls(
-                        race_id=race_id,
-                        data_kbn=data_kbn,
-                        announce_mmddhhmi=announce_mmddhhmi,
-                        horse_no=h_no,
-                        win_odds_x10=odds_raw,
-                        win_popularity=pop if pop and pop > 0 else None,
-                        win_pool_total_100yen=win_pool_total if win_pool_total > 0 else None,
-                    )
+                rows_by_horse[h_no] = cls(
+                    race_id=race_id,
+                    data_kbn=data_kbn,
+                    announce_mmddhhmi=announce_mmddhhmi,
+                    horse_no=h_no,
+                    win_odds_x10=odds_raw,
+                    win_popularity=pop if pop and pop > 0 else None,
+                    win_pool_total_100yen=win_pool_total if win_pool_total > 0 else None,
+                    data_create_ymd=data_create_ymd,
+                    sale_flag_place=sale_flag_place,
+                    place_pay_key=place_pay_key,
+                    place_pool_total_100yen=place_pool_total if place_pool_total > 0 else None,
+                    has_win_block=True,
                 )
 
-        return results
+        # Place Odds (28 horses)
+        for i in range(O1_PLACE_COUNT):
+            offset = O1_PLACE_START + i * O1_PLACE_BLOCK_LEN
+            h_no = _slice_byte_int(b_payload, offset, 2)
+            min_odds = _slice_byte_maskable_int(b_payload, offset + 2, 4)
+            max_odds = _slice_byte_maskable_int(b_payload, offset + 6, 4)
+            pop = _slice_byte_maskable_int(b_payload, offset + 10, 2)
+
+            if not (h_no and h_no > 0):
+                continue
+
+            row = rows_by_horse.get(h_no)
+            if row is None:
+                row = cls(
+                    race_id=race_id,
+                    data_kbn=data_kbn,
+                    announce_mmddhhmi=announce_mmddhhmi,
+                    horse_no=h_no,
+                    win_odds_x10=None,
+                    win_popularity=None,
+                    win_pool_total_100yen=win_pool_total if win_pool_total > 0 else None,
+                    data_create_ymd=data_create_ymd,
+                    sale_flag_place=sale_flag_place,
+                    place_pay_key=place_pay_key,
+                    place_pool_total_100yen=place_pool_total if place_pool_total > 0 else None,
+                )
+                rows_by_horse[h_no] = row
+
+            row.place_min_odds_x10 = min_odds
+            row.place_max_odds_x10 = max_odds
+            row.place_popularity = pop if pop and pop > 0 else None
+            row.has_place_block = True
+
+        return [rows_by_horse[horse_no] for horse_no in sorted(rows_by_horse)]
 
 
 @dataclass
