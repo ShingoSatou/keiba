@@ -27,9 +27,9 @@ logger = logging.getLogger(__name__)
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build v3 features from v2 features + odds snapshots(final/t20/t15/t10)."
+        description="Build v3 features from base features + odds snapshots(final/t20/t15/t10)."
     )
-    parser.add_argument("--input", default="data/features_v2.parquet")
+    parser.add_argument("--input", default="data/features_base.parquet")
     parser.add_argument("--output", default="data/features_v3.parquet")
     parser.add_argument("--meta-output", default="data/features_v3_meta.json")
     parser.add_argument("--log-level", default="INFO")
@@ -113,8 +113,8 @@ def main(argv: list[str] | None = None) -> int:
     if not input_path.exists():
         raise SystemExit(f"input not found: {input_path}")
 
-    features_v2 = pd.read_parquet(input_path)
-    features_v3 = build_features_v3(features_v2)
+    features_base = pd.read_parquet(input_path)
+    features_v3 = build_features_v3(features_base)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     features_v3.to_parquet(output_path, index=False)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 OPERATIONAL_MODE_CHOICES = ("t10_only", "includes_final")
-PL_FEATURE_PROFILE_CHOICES = ("stack_default", "meta_default", "raw_legacy")
+PL_FEATURE_PROFILE_CHOICES = ("stack_default", "meta_default")
 STACKER_TASK_CHOICES = ("win", "place")
 FEATURE_MANIFEST_VERSION = 1
 
@@ -121,14 +121,6 @@ STACKER_PLACE_ODDS_FEATURES = [
     "place_width_log_ratio_t10",
 ]
 
-PL_REQUIRED_PRED_FEATURES_RAW_LEGACY = [
-    "p_win_lgbm",
-    "p_win_xgb",
-    "p_win_cat",
-    "p_place_lgbm",
-    "p_place_xgb",
-    "p_place_cat",
-]
 PL_REQUIRED_PRED_FEATURES_META = [
     "p_win_meta",
     "p_place_meta",
@@ -137,7 +129,6 @@ PL_REQUIRED_PRED_FEATURES_STACK = [
     "p_win_stack",
     "p_place_stack",
 ]
-PL_REQUIRED_PRED_FEATURES = PL_REQUIRED_PRED_FEATURES_RAW_LEGACY
 PL_META_DEFAULT_ODDS_FEATURES = ["p_win_odds_t10_norm"]
 PL_T10_ODDS_FEATURES = [
     "odds_win_t10",
@@ -390,18 +381,10 @@ def get_pl_feature_columns(
     if feature_profile == "stack_default":
         cols = [*PL_STACK_CORE_FEATURES, *PL_STACK_INTERACTION_FEATURES]
     else:
-        if feature_profile == "meta_default":
-            odds_cols = PL_META_DEFAULT_ODDS_FEATURES
-        else:
-            odds_cols = PL_T10_ODDS_FEATURES
-
+        odds_cols = PL_META_DEFAULT_ODDS_FEATURES
         cols = [*required_pred_cols, *odds_cols]
         if include_context:
             cols.extend(PL_CONTEXT_FEATURES_SMALL)
-        if feature_profile == "raw_legacy" and (
-            include_final_odds or operational_mode == "includes_final"
-        ):
-            cols.extend(FINAL_ODDS_BASE_FEATURES)
 
     feature_cols = _dedupe_existing(frame, cols)
     validate_feature_contract(
@@ -414,19 +397,13 @@ def get_pl_feature_columns(
 
 def get_pl_required_pred_columns(
     feature_profile: str,
-    odds_cal_cols: list[str] | None = None,
-    include_calibrated_odds_features: bool = False,
 ) -> list[str]:
     _validate_pl_feature_profile(feature_profile)
     cols: list[str]
     if feature_profile == "stack_default":
         cols = [*PL_REQUIRED_PRED_FEATURES_STACK]
-    elif feature_profile == "meta_default":
-        cols = [*PL_REQUIRED_PRED_FEATURES_META, *PL_META_DEFAULT_ODDS_FEATURES]
     else:
-        cols = [*PL_REQUIRED_PRED_FEATURES_RAW_LEGACY]
-        if include_calibrated_odds_features and odds_cal_cols:
-            cols.extend(list(odds_cal_cols))
+        cols = [*PL_REQUIRED_PRED_FEATURES_META, *PL_META_DEFAULT_ODDS_FEATURES]
 
     deduped: list[str] = []
     seen: set[str] = set()
@@ -481,9 +458,7 @@ __all__ = [
     "PL_CONTEXT_FEATURES_SMALL",
     "PL_FEATURE_PROFILE_CHOICES",
     "PL_META_DEFAULT_ODDS_FEATURES",
-    "PL_REQUIRED_PRED_FEATURES",
     "PL_REQUIRED_PRED_FEATURES_META",
-    "PL_REQUIRED_PRED_FEATURES_RAW_LEGACY",
     "PL_REQUIRED_PRED_FEATURES_STACK",
     "PL_STACK_CORE_FEATURES",
     "PL_STACK_INTERACTION_FEATURES",

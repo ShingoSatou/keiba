@@ -112,7 +112,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--odds-cal-oof",
         default="data/oof/odds_win_calibration_oof.parquet",
-        help="Optional. Used only for raw_legacy when --odds-cal-cols is set.",
+        help="Optional calibration OOF path (reserved for future use).",
     )
     parser.add_argument(
         "--odds-cal-cols",
@@ -194,9 +194,7 @@ def _meta_input_mode(feature_profile: str) -> str:
     profile = str(feature_profile)
     if profile == "stack_default":
         return "strict_temporal_stacker_oof"
-    if profile == "meta_default":
-        return "grouped_reference_oof"
-    return "none_raw_legacy"
+    return "grouped_reference_oof"
 
 
 def _profile_suffix(feature_profile: str) -> str:
@@ -436,20 +434,9 @@ def _external_pred_paths(
                 args.place_stack_holdout if holdout else args.place_stack_oof
             ),
         }
-    if profile == "meta_default":
-        return {
-            "p_win_meta": resolve_path(args.win_meta_holdout if holdout else args.win_meta_oof),
-            "p_place_meta": resolve_path(
-                args.place_meta_holdout if holdout else args.place_meta_oof
-            ),
-        }
     return {
-        "p_win_lgbm": resolve_path(args.win_lgbm_holdout if holdout else args.win_lgbm_oof),
-        "p_win_xgb": resolve_path(args.win_xgb_holdout if holdout else args.win_xgb_oof),
-        "p_win_cat": resolve_path(args.win_cat_holdout if holdout else args.win_cat_oof),
-        "p_place_lgbm": resolve_path(args.place_lgbm_holdout if holdout else args.place_lgbm_oof),
-        "p_place_xgb": resolve_path(args.place_xgb_holdout if holdout else args.place_xgb_oof),
-        "p_place_cat": resolve_path(args.place_cat_holdout if holdout else args.place_cat_oof),
+        "p_win_meta": resolve_path(args.win_meta_holdout if holdout else args.win_meta_oof),
+        "p_place_meta": resolve_path(args.place_meta_holdout if holdout else args.place_meta_oof),
     }
 
 
@@ -464,25 +451,14 @@ def _merge_prediction_features(
         pred_df = _load_single_prediction(path, pred_col, require_valid_year=True)
         merged = merged.merge(pred_df, on=["race_id", "horse_no"], how="left")
 
-    cal_cols: list[str] = []
-    if str(args.pl_feature_profile) == "raw_legacy" and _include_calibrated_odds_features(args):
-        cal_cols_hint = _parse_csv(args.odds_cal_cols)
-        cal_df, cal_cols = _load_odds_calibration_oof(
-            resolve_path(args.odds_cal_oof), cal_cols_hint
-        )
-        if cal_cols:
-            merged = merged.merge(cal_df, on=["race_id", "horse_no"], how="left")
-
     required_pred_cols = get_pl_required_pred_columns(
         str(args.pl_feature_profile),
-        odds_cal_cols=sorted(cal_cols),
-        include_calibrated_odds_features=_include_calibrated_odds_features(args),
     )
     merged = _materialize_pl_profile_frame(
         merged,
         feature_profile=str(args.pl_feature_profile),
     )
-    return merged, _dedupe_preserve_order(required_pred_cols), pred_paths, sorted(cal_cols)
+    return merged, _dedupe_preserve_order(required_pred_cols), pred_paths, []
 
 
 def _merge_holdout_prediction_features(
@@ -497,8 +473,6 @@ def _merge_holdout_prediction_features(
 
     required_pred_cols = get_pl_required_pred_columns(
         str(args.pl_feature_profile),
-        odds_cal_cols=sorted(_parse_csv(args.odds_cal_cols)),
-        include_calibrated_odds_features=_include_calibrated_odds_features(args),
     )
     merged = _materialize_pl_profile_frame(
         merged,

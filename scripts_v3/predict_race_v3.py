@@ -255,14 +255,12 @@ def _predict_with_meta_artifact(
 
 def _infer_pl_feature_profile(artifact: dict[str, Any]) -> str:
     profile = str(artifact.get("pl_feature_profile", "")).strip()
-    if profile in {"stack_default", "meta_default", "raw_legacy"}:
+    if profile in {"stack_default", "meta_default"}:
         return profile
     feature_cols = set(map(str, artifact.get("feature_columns", [])))
     if {"z_win_stack", "z_place_stack"} & feature_cols:
         return "stack_default"
-    if {"p_win_meta", "p_place_meta"} & feature_cols:
-        return "meta_default"
-    return "raw_legacy"
+    return "meta_default"
 
 
 def _apply_meta_models(

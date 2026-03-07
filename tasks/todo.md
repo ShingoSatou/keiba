@@ -13,6 +13,7 @@
 
 | id | title | version | status | file |
 |---|---|---|---|---|
+| `2026-03-07_v3-refactor-remove-v2-dependency` | v3 リファクタリング: v2 依存排除・legacy 削除・ドキュメント整備 | v3 | `in-progress` | [task](./active/2026-03-07_v3-refactor-remove-v2-dependency.md) |
 
 ## Done
 
