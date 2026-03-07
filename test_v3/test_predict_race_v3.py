@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 from sklearn.linear_model import LogisticRegression
 
+from scripts_v3.feature_registry_v3 import PL_STACK_CORE_FEATURES, PL_STACK_INTERACTION_FEATURES
 from scripts_v3.predict_race_v3 import _score_with_pl, main
 
 
@@ -58,20 +59,48 @@ def _input_frame() -> pd.DataFrame:
             "horse_id": ["H001", "H002"],
             "horse_no": [1, 2],
             "race_date": ["2025-03-01", "2025-03-01"],
+            "track_code": [5, 5],
             "field_size": [2, 2],
             "surface": [1, 1],
             "distance_m": [1600, 1600],
             "going": [2, 2],
+            "weather": [1, 1],
+            "grade_code": [3, 3],
+            "race_type_code": [1, 1],
+            "weight_type_code": [1, 1],
+            "condition_code_min_age": [3, 3],
             "apt_same_distance_top3_rate_2y": [0.42, 0.25],
             "apt_same_going_top3_rate_2y": [0.38, 0.20],
             "rel_lag1_speed_index_z": [0.8, -0.3],
             "rel_meta_tm_score_z": [0.7, -0.2],
+            "odds_win_t20": [4.2, 12.0],
+            "odds_win_t15": [4.0, 11.5],
             "odds_win_t10": [3.8, 11.2],
             "p_win_odds_t10_raw": [0.26, 0.09],
             "p_win_odds_t10_norm": [0.23, 0.08],
             "odds_t10_data_kbn": [3, 3],
+            "odds_win_t20_asof_dt": ["2025-03-01 14:40:00", "2025-03-01 14:40:00"],
+            "odds_win_t20_announce_dt": ["2025-03-01 14:39:00", "2025-03-01 14:39:00"],
+            "odds_win_t15_asof_dt": ["2025-03-01 14:45:00", "2025-03-01 14:45:00"],
+            "odds_win_t15_announce_dt": ["2025-03-01 14:44:00", "2025-03-01 14:44:00"],
             "odds_t10_asof_dt": ["2025-03-01 14:50:00", "2025-03-01 14:50:00"],
             "odds_t10_announce_dt": ["2025-03-01 14:49:00", "2025-03-01 14:49:00"],
+            "odds_place_t20_lower": [1.5, 2.7],
+            "odds_place_t20_upper": [1.9, 3.5],
+            "place_width_log_ratio_t20": [0.236, 0.260],
+            "odds_place_t15_lower": [1.5, 2.6],
+            "odds_place_t15_upper": [1.9, 3.4],
+            "place_width_log_ratio_t15": [0.236, 0.268],
+            "odds_place_t10_lower": [1.4, 2.5],
+            "odds_place_t10_upper": [1.8, 3.3],
+            "place_width_log_ratio_t10": [0.251, 0.278],
+            "place_width_log_ratio": [0.251, 0.278],
+            "odds_place_t20_asof_dt": ["2025-03-01 14:40:00", "2025-03-01 14:40:00"],
+            "odds_place_t20_announce_dt": ["2025-03-01 14:39:00", "2025-03-01 14:39:00"],
+            "odds_place_t15_asof_dt": ["2025-03-01 14:45:00", "2025-03-01 14:45:00"],
+            "odds_place_t15_announce_dt": ["2025-03-01 14:44:00", "2025-03-01 14:44:00"],
+            "odds_place_t10_asof_dt": ["2025-03-01 14:50:00", "2025-03-01 14:50:00"],
+            "odds_place_t10_announce_dt": ["2025-03-01 14:49:00", "2025-03-01 14:49:00"],
             "p_win_lgbm": [0.80, 0.30],
             "p_win_xgb": [0.75, 0.35],
             "p_win_cat": [0.70, 0.40],
@@ -204,3 +233,47 @@ def test_predict_race_raw_legacy_path_does_not_require_meta_models(tmp_path: Pat
     assert "pl_score" in out.columns
     assert "p_top3" in out.columns
     assert "p_win_meta" not in out.columns
+
+
+def test_predict_race_stack_default_path_materializes_stack_inputs(tmp_path: Path) -> None:
+    input_path = tmp_path / "race_stack.parquet"
+    output_path = tmp_path / "pred_stack.parquet"
+    frame = _input_frame().assign(
+        p_win_stack=[0.78, 0.22],
+        p_place_stack=[0.80, 0.40],
+    )
+    frame.to_parquet(input_path, index=False)
+
+    pl_model = tmp_path / "pl_stack.joblib"
+    joblib.dump(
+        _pl_artifact(
+            [*PL_STACK_CORE_FEATURES, *PL_STACK_INTERACTION_FEATURES],
+            profile="stack_default",
+        ),
+        pl_model,
+    )
+
+    rc = main(
+        [
+            "--input",
+            str(input_path),
+            "--pl-model",
+            str(pl_model),
+            "--skip-base-model-inference",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert rc == 0
+    out = pd.read_parquet(output_path)
+    expected_cols = {
+        "p_win_stack",
+        "p_place_stack",
+        "z_win_stack",
+        "z_place_stack",
+        "place_width_log_ratio",
+    }
+    assert expected_cols.issubset(out.columns)
+    assert out["pl_score"].notna().all()
+    assert out["p_top3"].notna().all()

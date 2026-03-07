@@ -27,12 +27,12 @@ from scripts_v3.pl_v3_common import (  # noqa: E402
     estimate_p_top3_by_race,
     estimate_p_wide_by_race,
     fit_pl_linear_torch,
+    materialize_stack_default_pl_features,
     pl_nll_numpy,
     predict_linear_scores,
 )
 from scripts_v3.train_binary_v3_common import (  # noqa: E402
     DEFAULT_CV_WINDOW_POLICY,
-    DEFAULT_TRAIN_WINDOW_YEARS,
     attach_cv_policy_columns,
     build_cv_policy_payload,
     build_fixed_window_year_folds,
@@ -48,6 +48,7 @@ from scripts_v3.train_binary_v3_common import (  # noqa: E402
 logger = logging.getLogger(__name__)
 
 DEFAULT_HOLDOUT_YEAR = 2025
+DEFAULT_PL_TRAIN_WINDOW_YEARS = 3
 DEFAULT_EPOCHS = 300
 DEFAULT_LR = 0.05
 DEFAULT_L2 = 1e-5
@@ -58,7 +59,7 @@ DEFAULT_MC_SAMPLES = 10_000
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Train v3 PL(uなし) layer with fixed-length sliding yearly CV using OOF predictions."
+            "Train v3 PL(uなし) ranking layer from stacker/meta/raw OOF predictions."
         )
     )
     parser.add_argument("--features-input", default="data/features_v3.parquet")
@@ -66,7 +67,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--pl-feature-profile",
         choices=list(PL_FEATURE_PROFILE_CHOICES),
-        default="meta_default",
+        default="stack_default",
     )
     parser.add_argument("--win-lgbm-oof", default="data/oof/win_lgbm_oof.parquet")
     parser.add_argument("--win-xgb-oof", default="data/oof/win_xgb_oof.parquet")
@@ -74,6 +75,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--place-lgbm-oof", default="data/oof/place_lgbm_oof.parquet")
     parser.add_argument("--place-xgb-oof", default="data/oof/place_xgb_oof.parquet")
     parser.add_argument("--place-cat-oof", default="data/oof/place_cat_oof.parquet")
+    parser.add_argument("--win-stack-oof", default="data/oof/win_stack_oof.parquet")
+    parser.add_argument("--place-stack-oof", default="data/oof/place_stack_oof.parquet")
     parser.add_argument("--win-meta-oof", default="data/oof/win_meta_oof.parquet")
     parser.add_argument("--place-meta-oof", default="data/oof/place_meta_oof.parquet")
     parser.add_argument(
@@ -92,6 +95,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--place-cat-holdout",
         default="data/holdout/place_cat_holdout_pred_v3.parquet",
+    )
+    parser.add_argument(
+        "--win-stack-holdout",
+        default="data/holdout/win_stack_holdout_pred_v3.parquet",
+    )
+    parser.add_argument(
+        "--place-stack-holdout",
+        default="data/holdout/place_stack_holdout_pred_v3.parquet",
     )
     parser.add_argument(
         "--win-meta-holdout", default="data/holdout/win_meta_holdout_pred_v3.parquet"
@@ -125,8 +136,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--train-window-years",
         type=int,
-        default=DEFAULT_TRAIN_WINDOW_YEARS,
-        help="The v3 standard comparison condition is fixed_sliding with 4 years.",
+        default=DEFAULT_PL_TRAIN_WINDOW_YEARS,
+        help="The v3 PL default comparison condition is fixed_sliding with 3 years.",
     )
     parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
     parser.add_argument("--lr", type=float, default=DEFAULT_LR)
@@ -142,6 +153,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--all-years-model-output", default="")
     parser.add_argument("--meta-output", default="")
     parser.add_argument("--holdout-output", default="")
+    parser.add_argument("--year-coverage-output", default="")
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args(argv)
 
@@ -181,11 +193,16 @@ def _operational_mode(include_final_odds_features: bool) -> str:
 
 
 def _meta_input_mode(feature_profile: str) -> str:
-    return "grouped_reference_oof" if str(feature_profile) == "meta_default" else "none_raw_legacy"
+    profile = str(feature_profile)
+    if profile == "stack_default":
+        return "strict_temporal_stacker_oof"
+    if profile == "meta_default":
+        return "grouped_reference_oof"
+    return "none_raw_legacy"
 
 
 def _profile_suffix(feature_profile: str) -> str:
-    return "" if str(feature_profile) == "meta_default" else f"_{feature_profile}"
+    return "" if str(feature_profile) == "stack_default" else f"_{feature_profile}"
 
 
 def _resolve_output_paths(args: argparse.Namespace) -> dict[str, Path]:
@@ -198,6 +215,7 @@ def _resolve_output_paths(args: argparse.Namespace) -> dict[str, Path]:
         "all_years_model": f"models/pl_v3_all_years{suffix}.joblib",
         "meta": f"models/pl_v3_bundle_meta{suffix}.json",
         "holdout": f"data/oof/pl_v3_holdout_2025_pred{suffix}.parquet",
+        "year_coverage": f"data/oof/v3_pipeline_year_coverage{suffix}.json",
     }
     return {
         "oof": resolve_path(args.oof_output or defaults["oof"]),
@@ -207,6 +225,7 @@ def _resolve_output_paths(args: argparse.Namespace) -> dict[str, Path]:
         "all_years_model": resolve_path(args.all_years_model_output or defaults["all_years_model"]),
         "meta": resolve_path(args.meta_output or defaults["meta"]),
         "holdout": resolve_path(args.holdout_output or defaults["holdout"]),
+        "year_coverage": resolve_path(args.year_coverage_output or defaults["year_coverage"]),
     }
 
 
@@ -370,12 +389,55 @@ def _include_calibrated_odds_features(args: argparse.Namespace) -> bool:
     return bool(_parse_csv(args.odds_cal_cols))
 
 
+def _load_valid_years_from_prediction(path: Path) -> list[int]:
+    if not path.exists():
+        raise SystemExit(f"prediction file not found: {path}")
+    frame = pd.read_parquet(path, columns=["valid_year"])
+    if "valid_year" not in frame.columns:
+        raise SystemExit(f"Missing valid_year column in {path}")
+    years = (
+        pd.to_numeric(frame["valid_year"], errors="coerce")
+        .dropna()
+        .astype(int)
+        .sort_values()
+        .unique()
+        .tolist()
+    )
+    return [int(year) for year in years]
+
+
+def _common_valid_years(paths: list[Path]) -> list[int]:
+    if not paths:
+        return []
+    valid_sets = [set(_load_valid_years_from_prediction(path)) for path in paths]
+    if not valid_sets:
+        return []
+    return sorted(set.intersection(*valid_sets))
+
+
+def _materialize_pl_profile_frame(
+    frame: pd.DataFrame,
+    *,
+    feature_profile: str,
+) -> pd.DataFrame:
+    if str(feature_profile) != "stack_default":
+        return frame
+    return materialize_stack_default_pl_features(frame)
+
+
 def _external_pred_paths(
     args: argparse.Namespace,
     *,
     holdout: bool,
 ) -> dict[str, Path]:
     profile = str(args.pl_feature_profile)
+    if profile == "stack_default":
+        return {
+            "p_win_stack": resolve_path(args.win_stack_holdout if holdout else args.win_stack_oof),
+            "p_place_stack": resolve_path(
+                args.place_stack_holdout if holdout else args.place_stack_oof
+            ),
+        }
     if profile == "meta_default":
         return {
             "p_win_meta": resolve_path(args.win_meta_holdout if holdout else args.win_meta_oof),
@@ -418,6 +480,10 @@ def _merge_prediction_features(
         odds_cal_cols=sorted(cal_cols),
         include_calibrated_odds_features=_include_calibrated_odds_features(args),
     )
+    merged = _materialize_pl_profile_frame(
+        merged,
+        feature_profile=str(args.pl_feature_profile),
+    )
     return merged, _dedupe_preserve_order(required_pred_cols), pred_paths, sorted(cal_cols)
 
 
@@ -435,6 +501,10 @@ def _merge_holdout_prediction_features(
         str(args.pl_feature_profile),
         odds_cal_cols=sorted(_parse_csv(args.odds_cal_cols)),
         include_calibrated_odds_features=_include_calibrated_odds_features(args),
+    )
+    merged = _materialize_pl_profile_frame(
+        merged,
+        feature_profile=str(args.pl_feature_profile),
     )
     return merged, _dedupe_preserve_order(required_pred_cols)
 
@@ -542,6 +612,80 @@ def _summary(values: list[float | None]) -> dict[str, float | None]:
         "min": float(np.min(arr)),
         "max": float(np.max(arr)),
     }
+
+
+def _empty_pl_oof_frame(required_pred_cols: list[str]) -> pd.DataFrame:
+    cols = [
+        "race_id",
+        "horse_id",
+        "horse_no",
+        "race_date",
+        "t_race",
+        "field_size",
+        "target_label",
+        "finish_pos",
+        "y_win",
+        "y_place",
+        "y_top3",
+        *required_pred_cols,
+        "pl_score",
+        "p_top3",
+        "fold_id",
+        "valid_year",
+        "cv_window_policy",
+        "train_window_years",
+        "holdout_year",
+        "window_definition",
+    ]
+    return pd.DataFrame(columns=_dedupe_preserve_order(cols))
+
+
+def _empty_wide_oof_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "race_id",
+            "horse_no_1",
+            "horse_no_2",
+            "kumiban",
+            "p_wide",
+            "p_top3_1",
+            "p_top3_2",
+            "fold_id",
+            "valid_year",
+            "cv_window_policy",
+            "train_window_years",
+            "holdout_year",
+            "window_definition",
+        ]
+    )
+
+
+def _build_year_coverage_payload(
+    *,
+    args: argparse.Namespace,
+    base_oof_years: list[int],
+    stacker_oof_years: list[int],
+    pl_eligible_years: list[int],
+    pl_oof_valid_years: list[int],
+    pl_holdout_train_years: list[int],
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "pl_feature_profile": str(args.pl_feature_profile),
+        "holdout_year": int(args.holdout_year),
+        "base_oof_years": list(map(int, base_oof_years)),
+        "stacker_oof_years": list(map(int, stacker_oof_years)),
+        "pl_eligible_years": list(map(int, pl_eligible_years)),
+        "pl_oof_valid_years": list(map(int, pl_oof_valid_years)),
+        "pl_holdout_train_years": list(map(int, pl_holdout_train_years)),
+        "pl_train_window_years": int(args.train_window_years),
+    }
+    payload["pl_fixed_window_oof_feasible"] = bool(payload["pl_oof_valid_years"])
+    if not payload["pl_oof_valid_years"]:
+        payload["pl_oof_status"] = (
+            "no fixed3 OOF fold available under current strict-temporal stacker coverage"
+        )
+    return payload
 
 
 def _artifact_from_fit(
@@ -757,7 +901,7 @@ def _run_pl_cv_loop(
                 wide_oof_list.append(wide)
 
     if not oof_list:
-        raise SystemExit("No PL OOF predictions generated.")
+        return _empty_pl_oof_frame(required_pred_cols), [], []
 
     oof = pd.concat(oof_list, axis=0, ignore_index=True).sort_values(
         ["race_id", "horse_no"], kind="mergesort"
@@ -840,6 +984,7 @@ def _build_pl_metrics_payload(
     pl_feature_cols: list[str],
     args: argparse.Namespace,
     holdout_summary: dict[str, Any] | None,
+    year_coverage: dict[str, Any],
 ) -> dict[str, Any]:
     """PL メトリクスの集計辞書を組み立てる。"""
     summary = {
@@ -856,6 +1001,7 @@ def _build_pl_metrics_payload(
             train_window_years=int(args.train_window_years),
             holdout_year=int(args.holdout_year),
             cv_window_policy=DEFAULT_CV_WINDOW_POLICY,
+            window_definition=make_window_definition(int(args.train_window_years)),
         ),
         "config": {
             "holdout_year": int(args.holdout_year),
@@ -886,6 +1032,7 @@ def _build_pl_metrics_payload(
         "forbidden_feature_check_passed": True,
         "folds": fold_metrics,
         "summary": summary,
+        "year_coverage": year_coverage,
     }
     if str(args.pl_feature_profile) == "meta_default":
         payload["meta_oof_is_strict_temporal"] = False
@@ -914,6 +1061,8 @@ def _build_pl_meta_payload(
     years: list[int],
     input_paths: dict[str, str],
     holdout_summary: dict[str, Any] | None,
+    year_coverage: dict[str, Any],
+    year_coverage_output: Path,
 ) -> dict[str, Any]:
     """PL バンドルメタ辞書を組み立てる。"""
     recent_years = sorted(recent_df["year"].unique().tolist())
@@ -925,6 +1074,7 @@ def _build_pl_meta_payload(
             train_window_years=int(args.train_window_years),
             holdout_year=int(args.holdout_year),
             cv_window_policy=DEFAULT_CV_WINDOW_POLICY,
+            window_definition=make_window_definition(int(args.train_window_years)),
         ),
         "operational_mode": _operational_mode(bool(args.include_final_odds_features)),
         "pl_feature_profile": str(args.pl_feature_profile),
@@ -938,10 +1088,12 @@ def _build_pl_meta_payload(
             "main_model": str(model_output),
             "all_years_model": str(all_years_model_output),
             "holdout_output": str(holdout_output),
+            "year_coverage": str(year_coverage_output),
         },
         "required_pred_cols": required_pred_cols,
         "feature_columns": pl_feature_cols,
         "cv_summary": cv_summary,
+        "year_coverage": year_coverage,
         "final_train_summary": {
             "main_model_years": recent_years,
             "main_model_rows": int(len(recent_df)),
@@ -1089,12 +1241,45 @@ def main(argv: list[str] | None = None) -> int:
         window_years=int(args.train_window_years),
         holdout_year=int(args.holdout_year),
     )
-    if not folds:
-        max_window = max(1, len(years) - 1)
-        raise SystemExit(
-            "No PL CV folds available under the fixed_sliding policy "
-            f"(available_years={years}, try --train-window-years <= {max_window})"
+    cv_policy = build_cv_policy_payload(
+        folds,
+        train_window_years=int(args.train_window_years),
+        holdout_year=int(args.holdout_year),
+        cv_window_policy=DEFAULT_CV_WINDOW_POLICY,
+        window_definition=make_window_definition(int(args.train_window_years)),
+    )
+
+    if str(args.pl_feature_profile) == "stack_default":
+        base_oof_years = _common_valid_years(
+            [
+                resolve_path(args.win_lgbm_oof),
+                resolve_path(args.win_xgb_oof),
+                resolve_path(args.win_cat_oof),
+                resolve_path(args.place_lgbm_oof),
+                resolve_path(args.place_xgb_oof),
+                resolve_path(args.place_cat_oof),
+            ]
         )
+        stacker_oof_years = _common_valid_years(list(pred_input_paths.values()))
+    else:
+        base_oof_years = []
+        stacker_oof_years = []
+
+    pl_holdout_train_years = select_recent_window_years(
+        years,
+        train_window_years=int(args.train_window_years),
+        holdout_year=int(args.holdout_year),
+    )
+    year_coverage = _build_year_coverage_payload(
+        args=args,
+        base_oof_years=base_oof_years,
+        stacker_oof_years=stacker_oof_years,
+        pl_eligible_years=years,
+        pl_oof_valid_years=[int(fold.valid_year) for fold in folds],
+        pl_holdout_train_years=pl_holdout_train_years,
+    )
+    save_json(outputs["year_coverage"], year_coverage)
+
     logger.info(
         "pl-v3 train years=%s folds=%s window=%s cv_policy=%s holdout_year>=%s rows=%s races=%s",
         years,
@@ -1105,15 +1290,34 @@ def main(argv: list[str] | None = None) -> int:
         len(eligible),
         eligible["race_id"].nunique(),
     )
+    logger.info(
+        "year coverage base_oof=%s stacker_oof=%s pl_oof=%s pl_holdout_train=%s",
+        year_coverage["base_oof_years"],
+        year_coverage["stacker_oof_years"],
+        year_coverage["pl_oof_valid_years"],
+        year_coverage["pl_holdout_train_years"],
+    )
+    if not folds:
+        logger.warning(
+            "No PL OOF folds available under fixed_sliding window=%s for years=%s. "
+            "Proceeding with holdout/final-model training only.",
+            args.train_window_years,
+            years,
+        )
 
     # --- CV loop ---
-    oof, wide_oof_list, fold_metrics = _run_pl_cv_loop(
-        eligible=eligible,
-        folds=folds,
-        pl_feature_cols=pl_feature_cols,
-        required_pred_cols=required_pred_cols,
-        args=args,
-    )
+    if folds:
+        oof, wide_oof_list, fold_metrics = _run_pl_cv_loop(
+            eligible=eligible,
+            folds=folds,
+            pl_feature_cols=pl_feature_cols,
+            required_pred_cols=required_pred_cols,
+            args=args,
+        )
+    else:
+        oof = _empty_pl_oof_frame(required_pred_cols)
+        wide_oof_list = []
+        fold_metrics = []
 
     # --- OOF 保存 ---
     outputs["oof"].parent.mkdir(parents=True, exist_ok=True)
@@ -1124,23 +1328,7 @@ def main(argv: list[str] | None = None) -> int:
         wide_oof = (
             pd.concat(wide_oof_list, axis=0, ignore_index=True)
             if wide_oof_list
-            else pd.DataFrame(
-                columns=[
-                    "race_id",
-                    "horse_no_1",
-                    "horse_no_2",
-                    "kumiban",
-                    "p_wide",
-                    "p_top3_1",
-                    "p_top3_2",
-                    "fold_id",
-                    "valid_year",
-                    "cv_window_policy",
-                    "train_window_years",
-                    "holdout_year",
-                    "window_definition",
-                ]
-            )
+            else _empty_wide_oof_frame()
         )
         wide_oof.to_parquet(outputs["wide_oof"], index=False)
 
@@ -1151,12 +1339,7 @@ def main(argv: list[str] | None = None) -> int:
         pl_feature_cols=pl_feature_cols,
         required_pred_cols=required_pred_cols,
         args=args,
-        cv_policy=build_cv_policy_payload(
-            folds,
-            train_window_years=int(args.train_window_years),
-            holdout_year=int(args.holdout_year),
-            cv_window_policy=DEFAULT_CV_WINDOW_POLICY,
-        ),
+        cv_policy=cv_policy,
     )
 
     holdout_summary: dict[str, Any] | None = None
@@ -1205,6 +1388,7 @@ def main(argv: list[str] | None = None) -> int:
         pl_feature_cols=pl_feature_cols,
         args=args,
         holdout_summary=holdout_summary,
+        year_coverage=year_coverage,
     )
     save_json(outputs["metrics"], metrics_payload)
 
@@ -1213,6 +1397,17 @@ def main(argv: list[str] | None = None) -> int:
         "odds_cal_oof": str(resolve_path(args.odds_cal_oof)) if cal_cols else None,
         "holdout_input": str(holdout_input_path) if holdout_input_path is not None else None,
     }
+    if str(args.pl_feature_profile) == "stack_default":
+        input_paths.update(
+            {
+                "win_lgbm_oof": str(resolve_path(args.win_lgbm_oof)),
+                "win_xgb_oof": str(resolve_path(args.win_xgb_oof)),
+                "win_cat_oof": str(resolve_path(args.win_cat_oof)),
+                "place_lgbm_oof": str(resolve_path(args.place_lgbm_oof)),
+                "place_xgb_oof": str(resolve_path(args.place_xgb_oof)),
+                "place_cat_oof": str(resolve_path(args.place_cat_oof)),
+            }
+        )
     input_paths = {key: value for key, value in input_paths.items() if value is not None}
 
     meta_payload = _build_pl_meta_payload(
@@ -1233,6 +1428,8 @@ def main(argv: list[str] | None = None) -> int:
         years=years,
         input_paths=input_paths,
         holdout_summary=holdout_summary,
+        year_coverage=year_coverage,
+        year_coverage_output=outputs["year_coverage"],
     )
     save_json(outputs["meta"], meta_payload)
 
@@ -1241,6 +1438,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("wrote %s", outputs["wide_oof"])
     if holdout_input_path is not None:
         logger.info("wrote %s", outputs["holdout"])
+    logger.info("wrote %s", outputs["year_coverage"])
     logger.info("wrote %s", outputs["metrics"])
     logger.info("wrote %s", outputs["model"])
     logger.info("wrote %s", outputs["all_years_model"])

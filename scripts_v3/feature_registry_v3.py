@@ -3,7 +3,8 @@ from __future__ import annotations
 import pandas as pd
 
 OPERATIONAL_MODE_CHOICES = ("t10_only", "includes_final")
-PL_FEATURE_PROFILE_CHOICES = ("meta_default", "raw_legacy")
+PL_FEATURE_PROFILE_CHOICES = ("stack_default", "meta_default", "raw_legacy")
+STACKER_TASK_CHOICES = ("win", "place")
 FEATURE_MANIFEST_VERSION = 1
 
 BINARY_BASE_FEATURES = [
@@ -58,6 +59,45 @@ BINARY_T10_ODDS_FEATURES = [
 ]
 BINARY_ENTITY_ID_FEATURES = ["jockey_key", "trainer_key"]
 
+STACKER_CONTEXT_FEATURES = [
+    "track_code",
+    "surface",
+    "distance_m",
+    "going",
+    "weather",
+    "field_size",
+    "grade_code",
+    "race_type_code",
+    "weight_type_code",
+    "condition_code_min_age",
+]
+STACKER_REQUIRED_PRED_FEATURES_WIN = [
+    "p_win_lgbm",
+    "p_win_xgb",
+    "p_win_cat",
+]
+STACKER_REQUIRED_PRED_FEATURES_PLACE = [
+    "p_place_lgbm",
+    "p_place_xgb",
+    "p_place_cat",
+]
+STACKER_WIN_ODDS_FEATURES = [
+    "odds_win_t20",
+    "odds_win_t15",
+    "odds_win_t10",
+]
+STACKER_PLACE_ODDS_FEATURES = [
+    "odds_place_t20_lower",
+    "odds_place_t20_upper",
+    "place_width_log_ratio_t20",
+    "odds_place_t15_lower",
+    "odds_place_t15_upper",
+    "place_width_log_ratio_t15",
+    "odds_place_t10_lower",
+    "odds_place_t10_upper",
+    "place_width_log_ratio_t10",
+]
+
 PL_REQUIRED_PRED_FEATURES_RAW_LEGACY = [
     "p_win_lgbm",
     "p_win_xgb",
@@ -69,6 +109,10 @@ PL_REQUIRED_PRED_FEATURES_RAW_LEGACY = [
 PL_REQUIRED_PRED_FEATURES_META = [
     "p_win_meta",
     "p_place_meta",
+]
+PL_REQUIRED_PRED_FEATURES_STACK = [
+    "p_win_stack",
+    "p_place_stack",
 ]
 PL_REQUIRED_PRED_FEATURES = PL_REQUIRED_PRED_FEATURES_RAW_LEGACY
 PL_META_DEFAULT_ODDS_FEATURES = ["p_win_odds_t10_norm"]
@@ -87,6 +131,36 @@ PL_CONTEXT_FEATURES_SMALL = [
     "apt_same_going_top3_rate_2y",
     "rel_lag1_speed_index_z",
     "rel_meta_tm_score_z",
+]
+PL_STACK_CORE_FEATURES = [
+    "z_win_stack",
+    "z_place_stack",
+    "place_width_log_ratio",
+]
+PL_STACK_INTERACTION_FEATURES = [
+    "track_code",
+    "surface",
+    "distance_m",
+    "going",
+    "weather",
+    "field_size",
+    "grade_code",
+    "race_type_code",
+    "weight_type_code",
+    "condition_code_min_age",
+    "z_win_stack_x_z_place_stack",
+    "z_win_stack_x_place_width_log_ratio",
+    "z_place_stack_x_place_width_log_ratio",
+    "z_win_stack_x_field_size",
+    "z_place_stack_x_field_size",
+    "z_win_stack_x_distance_m",
+    "z_place_stack_x_distance_m",
+    "z_win_stack_race_centered",
+    "z_place_stack_race_centered",
+    "place_width_log_ratio_race_centered",
+    "z_win_stack_rank_pct",
+    "z_place_stack_rank_pct",
+    "place_width_log_ratio_rank_pct",
 ]
 
 FINAL_ODDS_BASE_FEATURES = [
@@ -133,6 +207,13 @@ def _validate_pl_feature_profile(feature_profile: str) -> None:
         )
 
 
+def _validate_stacker_task(task: str) -> None:
+    if task not in STACKER_TASK_CHOICES:
+        raise ValueError(
+            f"Unknown stacker task={task!r}. Expected one of {STACKER_TASK_CHOICES}."
+        )
+
+
 def _dedupe_existing(frame: pd.DataFrame, cols: list[str]) -> list[str]:
     existing = set(map(str, frame.columns))
     deduped: list[str] = []
@@ -167,6 +248,37 @@ def get_binary_feature_columns(
     return feature_cols
 
 
+def get_stacker_feature_columns(
+    frame: pd.DataFrame,
+    *,
+    task: str,
+    operational_mode: str = "t10_only",
+) -> list[str]:
+    _validate_stacker_task(task)
+    _validate_operational_mode(operational_mode)
+
+    if task == "win":
+        cols = [
+            *STACKER_REQUIRED_PRED_FEATURES_WIN,
+            *STACKER_WIN_ODDS_FEATURES,
+            *STACKER_CONTEXT_FEATURES,
+        ]
+    else:
+        cols = [
+            *STACKER_REQUIRED_PRED_FEATURES_PLACE,
+            *STACKER_PLACE_ODDS_FEATURES,
+            *STACKER_CONTEXT_FEATURES,
+        ]
+
+    feature_cols = _dedupe_existing(frame, cols)
+    validate_feature_contract(
+        feature_cols,
+        operational_mode=operational_mode,
+        stage="stacker",
+    )
+    return feature_cols
+
+
 def get_pl_feature_columns(
     frame: pd.DataFrame,
     *,
@@ -179,18 +291,21 @@ def get_pl_feature_columns(
     _validate_operational_mode(operational_mode)
     _validate_pl_feature_profile(feature_profile)
 
-    if feature_profile == "meta_default":
-        odds_cols = PL_META_DEFAULT_ODDS_FEATURES
+    if feature_profile == "stack_default":
+        cols = [*PL_STACK_CORE_FEATURES, *PL_STACK_INTERACTION_FEATURES]
     else:
-        odds_cols = PL_T10_ODDS_FEATURES
+        if feature_profile == "meta_default":
+            odds_cols = PL_META_DEFAULT_ODDS_FEATURES
+        else:
+            odds_cols = PL_T10_ODDS_FEATURES
 
-    cols = [*required_pred_cols, *odds_cols]
-    if include_context:
-        cols.extend(PL_CONTEXT_FEATURES_SMALL)
-    if feature_profile == "raw_legacy" and (
-        include_final_odds or operational_mode == "includes_final"
-    ):
-        cols.extend(FINAL_ODDS_BASE_FEATURES)
+        cols = [*required_pred_cols, *odds_cols]
+        if include_context:
+            cols.extend(PL_CONTEXT_FEATURES_SMALL)
+        if feature_profile == "raw_legacy" and (
+            include_final_odds or operational_mode == "includes_final"
+        ):
+            cols.extend(FINAL_ODDS_BASE_FEATURES)
 
     feature_cols = _dedupe_existing(frame, cols)
     validate_feature_contract(
@@ -208,12 +323,15 @@ def get_pl_required_pred_columns(
 ) -> list[str]:
     _validate_pl_feature_profile(feature_profile)
     cols: list[str]
-    if feature_profile == "meta_default":
+    if feature_profile == "stack_default":
+        cols = [*PL_REQUIRED_PRED_FEATURES_STACK]
+    elif feature_profile == "meta_default":
         cols = [*PL_REQUIRED_PRED_FEATURES_META, *PL_META_DEFAULT_ODDS_FEATURES]
     else:
         cols = [*PL_REQUIRED_PRED_FEATURES_RAW_LEGACY]
         if include_calibrated_odds_features and odds_cal_cols:
             cols.extend(list(odds_cal_cols))
+
     deduped: list[str] = []
     seen: set[str] = set()
     for col in cols:
@@ -269,10 +387,20 @@ __all__ = [
     "PL_REQUIRED_PRED_FEATURES",
     "PL_REQUIRED_PRED_FEATURES_META",
     "PL_REQUIRED_PRED_FEATURES_RAW_LEGACY",
+    "PL_REQUIRED_PRED_FEATURES_STACK",
+    "PL_STACK_CORE_FEATURES",
+    "PL_STACK_INTERACTION_FEATURES",
     "PL_T10_ODDS_FEATURES",
     "POST_RACE_FORBIDDEN_FEATURES",
+    "STACKER_CONTEXT_FEATURES",
+    "STACKER_PLACE_ODDS_FEATURES",
+    "STACKER_REQUIRED_PRED_FEATURES_PLACE",
+    "STACKER_REQUIRED_PRED_FEATURES_WIN",
+    "STACKER_TASK_CHOICES",
+    "STACKER_WIN_ODDS_FEATURES",
     "get_binary_feature_columns",
     "get_pl_feature_columns",
     "get_pl_required_pred_columns",
+    "get_stacker_feature_columns",
     "validate_feature_contract",
 ]

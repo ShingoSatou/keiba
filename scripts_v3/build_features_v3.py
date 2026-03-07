@@ -15,8 +15,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.infrastructure.database import Database
 from scripts_v3.odds_v3_common import (
-    assert_t10_no_future_reference,
+    assert_asof_no_future_reference,
     load_o1_odds_long,
+    load_o1_place_odds_long,
     merge_odds_features,
 )
 from scripts_v3.v3_common import assert_sorted, hash_files, resolve_path, save_json
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build v3 features from v2 features + odds snapshots(final/t10)."
+        description="Build v3 features from v2 features + odds snapshots(final/t20/t15/t10)."
     )
     parser.add_argument("--input", default="data/features_v2.parquet")
     parser.add_argument("--output", default="data/features_v3.parquet")
@@ -86,14 +87,15 @@ def build_features_v3(input_df: pd.DataFrame) -> pd.DataFrame:
     with Database() as db:
         finish_df = _load_finish_positions(db, race_ids)
         odds_long = load_o1_odds_long(db, race_ids)
+        place_odds_long = load_o1_place_odds_long(db, race_ids)
 
     if not finish_df.empty:
         frame = frame.merge(finish_df, on=["race_id", "horse_no"], how="left")
     else:
         frame["finish_pos"] = pd.NA
 
-    frame = merge_odds_features(frame, odds_long)
-    assert_t10_no_future_reference(frame)
+    frame = merge_odds_features(frame, odds_long, place_odds_long)
+    assert_asof_no_future_reference(frame)
 
     frame = frame.sort_values(["race_id", "horse_no"], kind="mergesort")
     assert_sorted(frame[["race_id", "horse_no"]].copy())
@@ -143,10 +145,39 @@ def main(argv: list[str] | None = None) -> int:
                 "p_win_odds_t10_norm",
             ]
         ),
+        "contains_stacker_timeseries_columns": all(
+            col in features_v3.columns
+            for col in [
+                "odds_win_t20",
+                "odds_win_t15",
+                "odds_win_t10",
+                "odds_place_t20_lower",
+                "odds_place_t20_upper",
+                "odds_place_t15_lower",
+                "odds_place_t15_upper",
+                "odds_place_t10_lower",
+                "odds_place_t10_upper",
+                "place_width_log_ratio",
+            ]
+        ),
         "coverage": {
             "finish_pos_notna_rate": float(features_v3["finish_pos"].notna().mean()),
             "odds_win_final_notna_rate": float(features_v3["odds_win_final"].notna().mean()),
+            "odds_win_t20_notna_rate": float(features_v3["odds_win_t20"].notna().mean()),
+            "odds_win_t15_notna_rate": float(features_v3["odds_win_t15"].notna().mean()),
             "odds_win_t10_notna_rate": float(features_v3["odds_win_t10"].notna().mean()),
+            "odds_place_t20_lower_notna_rate": float(
+                features_v3["odds_place_t20_lower"].notna().mean()
+            ),
+            "odds_place_t15_lower_notna_rate": float(
+                features_v3["odds_place_t15_lower"].notna().mean()
+            ),
+            "odds_place_t10_lower_notna_rate": float(
+                features_v3["odds_place_t10_lower"].notna().mean()
+            ),
+            "place_width_log_ratio_notna_rate": float(
+                features_v3["place_width_log_ratio"].notna().mean()
+            ),
             "p_win_odds_final_norm_notna_rate": float(
                 features_v3["p_win_odds_final_norm"].notna().mean()
             ),

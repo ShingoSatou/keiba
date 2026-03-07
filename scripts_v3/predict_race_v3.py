@@ -16,10 +16,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts_v3.odds_v3_common import assert_t10_no_future_reference  # noqa: E402
+from scripts_v3.odds_v3_common import assert_asof_no_future_reference  # noqa: E402
 from scripts_v3.pl_v3_common import (  # noqa: E402
     estimate_p_top3_by_race,
     estimate_p_wide_by_race,
+    materialize_stack_default_pl_features,
     predict_linear_scores,
 )
 from scripts_v3.train_binary_v3_common import coerce_feature_matrix, resolve_path  # noqa: E402
@@ -39,11 +40,16 @@ DEFAULT_PLACE_METAS = [
     "models/place_xgb_bundle_meta_v3.json",
     "models/place_cat_bundle_meta_v3.json",
 ]
+DEFAULT_WIN_STACK_META = "models/win_stack_bundle_meta_v3.json"
+DEFAULT_PLACE_STACK_META = "models/place_stack_bundle_meta_v3.json"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Predict single-race p_top3 (and optional p_wide) with v3 operational t10 path."
+        description=(
+            "Predict single-race p_top3 (and optional p_wide) "
+            "with v3 base->stacker->PL path."
+        )
     )
     parser.add_argument(
         "--input",
@@ -54,6 +60,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--odds-calibrator", default="models/odds_win_calibrators_v3.pkl")
     parser.add_argument("--win-metas", default=",".join(DEFAULT_WIN_METAS))
     parser.add_argument("--place-metas", default=",".join(DEFAULT_PLACE_METAS))
+    parser.add_argument("--win-stack-meta", default=DEFAULT_WIN_STACK_META)
+    parser.add_argument("--place-stack-meta", default=DEFAULT_PLACE_STACK_META)
     parser.add_argument("--win-meta-model", default="models/win_meta_v3.pkl")
     parser.add_argument("--place-meta-model", default="models/place_meta_v3.pkl")
     parser.add_argument(
@@ -200,6 +208,20 @@ def _apply_base_models(
     return out
 
 
+def _apply_json_meta_models(
+    frame: pd.DataFrame,
+    *,
+    meta_paths: list[Path],
+) -> pd.DataFrame:
+    out = frame.copy()
+    for meta_path in meta_paths:
+        pred_col, pred = _predict_with_meta(out, meta_path=meta_path)
+        if pred_col in out.columns:
+            continue
+        out[pred_col] = pred
+    return out
+
+
 def _predict_with_meta_artifact(
     frame: pd.DataFrame,
     *,
@@ -234,9 +256,11 @@ def _predict_with_meta_artifact(
 
 def _infer_pl_feature_profile(artifact: dict[str, Any]) -> str:
     profile = str(artifact.get("pl_feature_profile", "")).strip()
-    if profile in {"meta_default", "raw_legacy"}:
+    if profile in {"stack_default", "meta_default", "raw_legacy"}:
         return profile
     feature_cols = set(map(str, artifact.get("feature_columns", [])))
+    if {"z_win_stack", "z_place_stack"} & feature_cols:
+        return "stack_default"
     if {"p_win_meta", "p_place_meta"} & feature_cols:
         return "meta_default"
     return "raw_legacy"
@@ -255,6 +279,16 @@ def _apply_meta_models(
             continue
         out[pred_col] = pred
     return out
+
+
+def _materialize_stack_features_if_needed(
+    frame: pd.DataFrame,
+    *,
+    feature_profile: str,
+) -> pd.DataFrame:
+    if str(feature_profile) != "stack_default":
+        return frame
+    return materialize_stack_default_pl_features(frame)
 
 
 def _predict_calibrator(model: Any, method: str, x: np.ndarray) -> np.ndarray:
@@ -369,6 +403,8 @@ def main(argv: list[str] | None = None) -> int:
     odds_cal_path = resolve_path(args.odds_calibrator)
     win_meta_paths = [resolve_path(path) for path in _parse_csv(args.win_metas)]
     place_meta_paths = [resolve_path(path) for path in _parse_csv(args.place_metas)]
+    win_stack_meta_path = resolve_path(args.win_stack_meta)
+    place_stack_meta_path = resolve_path(args.place_stack_meta)
     win_meta_model_path = resolve_path(args.win_meta_model)
     place_meta_model_path = resolve_path(args.place_meta_model)
 
@@ -378,7 +414,7 @@ def main(argv: list[str] | None = None) -> int:
     pl_feature_profile = _infer_pl_feature_profile(artifact)
 
     frame = _load_input(input_path)
-    assert_t10_no_future_reference(frame)
+    assert_asof_no_future_reference(frame)
 
     if not bool(args.skip_base_model_inference):
         frame = _apply_base_models(
@@ -387,7 +423,18 @@ def main(argv: list[str] | None = None) -> int:
             place_meta_paths=place_meta_paths,
         )
     frame = _apply_odds_calibrators(frame, model_path=odds_cal_path)
-    if pl_feature_profile == "meta_default":
+    if pl_feature_profile == "stack_default":
+        needs_stack = any(col not in frame.columns for col in ("p_win_stack", "p_place_stack"))
+        if needs_stack:
+            frame = _apply_json_meta_models(
+                frame,
+                meta_paths=[win_stack_meta_path, place_stack_meta_path],
+            )
+        frame = _materialize_stack_features_if_needed(
+            frame,
+            feature_profile=pl_feature_profile,
+        )
+    elif pl_feature_profile == "meta_default":
         needs_meta = any(col not in frame.columns for col in ("p_win_meta", "p_place_meta"))
         if needs_meta:
             frame = _apply_meta_models(
@@ -429,8 +476,13 @@ def main(argv: list[str] | None = None) -> int:
             "p_place_lgbm",
             "p_place_xgb",
             "p_place_cat",
+            "p_win_stack",
+            "p_place_stack",
             "p_win_meta",
             "p_place_meta",
+            "z_win_stack",
+            "z_place_stack",
+            "place_width_log_ratio",
             "pl_score",
             "p_top3",
             "valid_year",
