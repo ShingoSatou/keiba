@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from scripts_v3.cv_policy_v3 import build_fixed_window_year_folds
+from scripts_v3.cv_policy_v3 import build_capped_expanding_year_folds, build_fixed_window_year_folds
 from scripts_v3.v3_common import build_rolling_year_folds
 
 
@@ -43,3 +43,20 @@ def test_build_rolling_year_folds_alias_matches_fixed_window_helper() -> None:
     alias = build_rolling_year_folds(years, train_window_years=4, holdout_year=2025)
 
     assert alias == fixed
+
+
+def test_capped_expanding_year_folds_follow_min2_max4_policy() -> None:
+    years = [2020, 2021, 2022, 2023, 2024, 2025]
+    folds = build_capped_expanding_year_folds(
+        years,
+        min_window_years=2,
+        max_window_years=4,
+        holdout_year=2026,
+    )
+
+    assert [(tuple(fold.train_years), fold.valid_year) for fold in folds] == [
+        ((2020, 2021), 2022),
+        ((2020, 2021, 2022), 2023),
+        ((2020, 2021, 2022, 2023), 2024),
+        ((2021, 2022, 2023, 2024), 2025),
+    ]

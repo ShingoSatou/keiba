@@ -18,6 +18,8 @@
 
 | id | title | version | status | file |
 |---|---|---|---|---|
+| `2026-03-07_v3-strict-stacker-retrain-eval` | v3 strict temporal stacker の full retrain と評価 | v3 | `done` | [task](./done/2026/2026-03-07_v3-strict-stacker-retrain-eval.md) |
+| `2026-03-07_v3-strict-stacker-pl-architecture` | v3 strict temporal stacker 導入と PL 責務分離 | v3 | `done` | [task](./done/2026/2026-03-07_v3-strict-stacker-pl-architecture.md) |
 | `2026-03-07_v2-o1-place-ci-fix` | v2 O1 複勝時系列 PR の CI format failure 修正 | v2 | `done` | [task](./done/2026/2026-03-07_v2-o1-place-ci-fix.md) |
 | `2026-03-07_v2-o1-place-pr` | v2 O1 複勝時系列対応の PR 作成 | v2 | `done` | [task](./done/2026/2026-03-07_v2-o1-place-pr.md) |
 | `2026-03-07_v2-o1-place-doc-audit` | v2 O1 複勝時系列対応のドキュメント反映確認 | v2 | `done` | [task](./done/2026/2026-03-07_v2-o1-place-doc-audit.md) |

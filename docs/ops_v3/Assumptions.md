@@ -1,35 +1,25 @@
 # Assumptions（v3実装時の推定前提）
 
-1. v3 の標準評価条件は `cv_window_policy=fixed_sliding` / `train_window_years=4` とする。
-   - valid year ごとに直前4年のみを train に使う。
-   - 4年未満しか履歴がない初期年は fold を作らずスキップする。
-   - holdout year（例: `2025`）は将来年として従来どおり使ってよい。
-   - この条件は今後のモデル改善比較の基準であり、過去 run report の窓条件とは直接比較しない場合がある。
-2. Benter R* の `beta` 最適化は fold train 内の in-sample 予測（trainでfitした分類器の train_pred）で実施する。
-3. `core.o1_win` の `win_odds_x10` が `NULL/0/負` の場合は欠損として扱う。
-4. binary / PL ともに `scripts_v3/feature_registry_v3.py` の whitelist / contract を使う。
-   - default operational profile は `t10_only`
-   - `features_v3` に final/t10 odds 列が存在しても、学習投入可否は registry 側で制御する
-5. binary の entity raw ID（`jockey_key`, `trainer_key`）は default で OFF とし、`--include-entity-id-features` 指定時のみ投入する。
-6. final odds は検証用途とし、opt-in がない限り学習投入しない。
-   - binary: `--operational-mode includes_final`
-   - PL: `--include-final-odds-features`
-   - 運用推論（`predict_race_v3.py`）は引き続き t10 特徴のみを許可する
-7. PL の default feature profile は `meta_default` とする。
-   - `p_win_meta`
-   - `p_place_meta`
-   - `p_win_odds_t10_norm`
-   - `PL_CONTEXT_FEATURES_SMALL`
-   - 比較用に `raw_legacy` profile を残す。
-8. `p_win_meta` / `p_place_meta` は base 予測の結合器として `race_id` grouped の通常CVで生成する convenience OOF とする。
-   - `StratifiedGroupKFold` を第一候補とし、難しい場合は `GroupKFold` にフォールバックする。
-   - `cv_is_temporal = false`
-   - `meta_oof_is_strict_temporal = false`
-   - `meta_metrics_are_reference_only = true`
-9. PL学習で使う後段入力は contract で要求された予測列のみとし、必要列が欠ける行は PL 学習対象から除外する。
-10. PL の context 特徴は small registry に固定し、frame 全 numeric の自動収集は行わない。
-11. PLは `u`（馬ID固定効果）を持たず、線形スコア `w^T x` のみを学習する。
-12. PLの `p_top3` / `p_wide` は Monte Carlo 推定を採用し、乱数シードは race_id とグローバルseedから決定する。
-13. ROI算出のデフォルトは v3の `scripts_v3/backtest_wide_v3.py` を利用し、`pl_score -> MC -> p_wide`（または `train_pl_v3.py --emit-wide-oof` が出力した `p_wide`）で評価する。
-14. 旧方式の v2近似（`scripts_v2/backtest_wide_v2.py`: `p_top3 -> p/(1-p) -> p_wide`）は比較用の参考経路として扱い、v3の標準評価経路にはしない。
-15. binary では bundle meta に加えて feature manifest を保存し、feature contract は unit test で固定する。
+1. v3 の標準評価条件は stage ごとに固定する。
+   - binary: `cv_window_policy=fixed_sliding` / `train_window_years=4`
+   - stacker: `cv_window_policy=capped_expanding` / `min_train_years=2` / `max_train_years=4`
+   - PL: `cv_window_policy=fixed_sliding` / `train_window_years=3`
+2. `core.o1_win` / `core.o1_place` の snapshot は as-of 契約を厳守し、`announce <= as_of` を満たす最新値だけを採用する。
+3. stacker の市場入力は固定 snapshot のみを使う。
+   - `stack_win`: 単勝 `t20/t15/t10`
+   - `stack_place`: 複勝 `t20/t15/t10`
+4. `place_width_log_ratio` の定義は `log(upper / lower)` とする。
+5. binary / stacker / PL ともに `feature_registry_v3.py` の whitelist / contract を使う。
+6. PL の default feature profile は `stack_default` とする。
+   - `z_win_stack`
+   - `z_place_stack`
+   - `place_width_log_ratio`
+   - interaction block
+7. grouped meta (`p_win_meta`, `p_place_meta`) は comparison 用に残すが、default main path では使わない。
+8. stacker 予測は strict temporal OOF / holdout / inference のみを downstream に渡し、同年 fitted 値は使わない。
+9. current repo の年範囲では `base_oof_years=2020-2024`, `stacker_oof_years=2022-2024` となるため、`holdout_year=2025` の PL fixed3 OOF fold は 0 件になる。
+10. 上記 9 の場合でも `train_pl_v3.py` は失敗せず、空 OOF と `v3_pipeline_year_coverage.json` を出力しつつ holdout/final 学習を継続する。
+11. final odds は検証用途とし、default stacker / PL main path には入れない。
+12. PL は馬 ID 固定効果 `u` を持たず、線形スコア `w^T x` のみを学習する。
+13. `p_top3` / `p_wide` は Monte Carlo 推定を採用し、乱数 seed は `race_id` と global seed から決定する。
+14. v3 の標準 ROI 評価経路は `scripts_v3/backtest_wide_v3.py` を使う。

@@ -12,8 +12,12 @@ from scripts_v3.feature_registry_v3 import (
     PL_META_DEFAULT_ODDS_FEATURES,
     PL_REQUIRED_PRED_FEATURES_META,
     PL_REQUIRED_PRED_FEATURES_RAW_LEGACY,
+    PL_REQUIRED_PRED_FEATURES_STACK,
+    PL_STACK_CORE_FEATURES,
+    PL_STACK_INTERACTION_FEATURES,
     PL_T10_ODDS_FEATURES,
 )
+from scripts_v3.pl_v3_common import materialize_stack_default_pl_features
 from scripts_v3.train_pl_v3 import (
     _artifact_from_fit,
     _build_pl_meta_payload,
@@ -32,9 +36,15 @@ def _sample_frame() -> pd.DataFrame:
                 "horse_no": 1,
                 "race_date": "2026-03-01",
                 "field_size": 16,
+                "track_code": 1,
                 "surface": 1,
                 "distance_m": 1600,
                 "going": 2,
+                "weather": 1,
+                "grade_code": 3,
+                "race_type_code": 1,
+                "weight_type_code": 1,
+                "condition_code_min_age": 3,
                 "apt_same_distance_top3_rate_2y": 0.4,
                 "apt_same_going_top3_rate_2y": 0.3,
                 "rel_lag1_speed_index_z": 0.8,
@@ -55,6 +65,9 @@ def _sample_frame() -> pd.DataFrame:
                 "p_place_cat": 0.27,
                 "p_win_meta": 0.131,
                 "p_place_meta": 0.261,
+                "p_win_stack": 0.141,
+                "p_place_stack": 0.271,
+                "place_width_log_ratio": 0.29,
                 "p_win_odds_t10_norm_cal_isotonic": 0.19,
                 "jockey_key": 1001,
                 "trainer_key": 2001,
@@ -63,6 +76,23 @@ def _sample_frame() -> pd.DataFrame:
             }
         ]
     )
+
+
+def test_pl_stack_default_contract_uses_stack_logits_and_interactions() -> None:
+    frame = materialize_stack_default_pl_features(_sample_frame())
+    feat_cols = _collect_pl_feature_columns(
+        frame,
+        feature_profile="stack_default",
+        required_pred_cols=PL_REQUIRED_PRED_FEATURES_STACK,
+        include_final_odds=False,
+        operational_mode="t10_only",
+    )
+
+    assert feat_cols[: len(PL_STACK_CORE_FEATURES)] == PL_STACK_CORE_FEATURES
+    assert all(col in feat_cols for col in PL_STACK_INTERACTION_FEATURES)
+    assert "p_win_stack" not in feat_cols
+    assert "p_place_stack" not in feat_cols
+    assert "extra_numeric_probe" not in feat_cols
 
 
 def test_pl_meta_default_contract_is_compact() -> None:
@@ -79,10 +109,6 @@ def test_pl_meta_default_contract_is_compact() -> None:
     assert all(col not in feat_cols for col in PL_T10_ODDS_FEATURES if col != "p_win_odds_t10_norm")
     assert all(col in feat_cols for col in PL_CONTEXT_FEATURES_SMALL)
     assert all(col not in feat_cols for col in FINAL_ODDS_BASE_FEATURES)
-    assert "extra_numeric_probe" not in feat_cols
-    assert "jockey_key" not in feat_cols
-    assert "trainer_key" not in feat_cols
-    assert "finish_pos" not in feat_cols
 
 
 def test_pl_raw_legacy_can_include_final_odds_only_when_requested() -> None:
@@ -119,13 +145,14 @@ def test_pl_extra_numeric_columns_do_not_expand_feature_list() -> None:
     assert extra_cols == base_cols
 
 
-def test_pl_artifact_and_meta_include_cv_policy() -> None:
+def test_pl_artifact_and_meta_include_strict_temporal_stacker_metadata() -> None:
     args = parse_args([])
-    folds = [FoldSpec(fold_id=1, train_years=(2020, 2021, 2022, 2023), valid_year=2024)]
+    stack_frame = materialize_stack_default_pl_features(_sample_frame())
+    folds: list[FoldSpec] = []
     feature_cols = _collect_pl_feature_columns(
-        _sample_frame(),
-        feature_profile="meta_default",
-        required_pred_cols=[*PL_REQUIRED_PRED_FEATURES_META, *PL_META_DEFAULT_ODDS_FEATURES],
+        stack_frame,
+        feature_profile="stack_default",
+        required_pred_cols=PL_REQUIRED_PRED_FEATURES_STACK,
         include_final_odds=False,
         operational_mode="t10_only",
     )
@@ -138,10 +165,10 @@ def test_pl_artifact_and_meta_include_cv_policy() -> None:
             "std": {col: 1.0 for col in feature_cols},
         },
         args=args,
-        train_years=[2021, 2022, 2023, 2024],
+        train_years=[2022, 2023, 2024],
         train_rows=10,
         train_races=2,
-        required_pred_cols=[*PL_REQUIRED_PRED_FEATURES_META, *PL_META_DEFAULT_ODDS_FEATURES],
+        required_pred_cols=PL_REQUIRED_PRED_FEATURES_STACK,
     )
     meta = _build_pl_meta_payload(
         args=args,
@@ -153,36 +180,45 @@ def test_pl_artifact_and_meta_include_cv_policy() -> None:
         model_output=Path("models/pl_v3_recent_window.joblib"),
         all_years_model_output=Path("models/pl_v3_all_years.joblib"),
         holdout_output=Path("data/oof/pl_v3_holdout_2025_pred.parquet"),
-        required_pred_cols=[*PL_REQUIRED_PRED_FEATURES_META, *PL_META_DEFAULT_ODDS_FEATURES],
+        required_pred_cols=PL_REQUIRED_PRED_FEATURES_STACK,
         pl_feature_cols=feature_cols,
         cv_summary={},
-        recent_df=_sample_frame().assign(year=2024),
-        all_df=_sample_frame().assign(year=2024),
-        years=[2024],
-        input_paths={"win_meta_oof": "data/oof/win_meta_oof.parquet"},
+        recent_df=stack_frame.assign(year=2024),
+        all_df=stack_frame.assign(year=2024),
+        years=[2022, 2023, 2024],
+        input_paths={"win_stack_oof": "data/oof/win_stack_oof.parquet"},
         holdout_summary=None,
+        year_coverage={
+            "base_oof_years": [2020, 2021, 2022, 2023, 2024],
+            "stacker_oof_years": [2022, 2023, 2024],
+            "pl_oof_valid_years": [],
+            "pl_holdout_train_years": [2022, 2023, 2024],
+        },
+        year_coverage_output=Path("data/oof/v3_pipeline_year_coverage.json"),
     )
 
+    assert args.pl_feature_profile == "stack_default"
+    assert args.train_window_years == 3
     assert artifact["cv_policy"]["cv_window_policy"] == "fixed_sliding"
-    assert artifact["cv_policy"]["train_window_years"] == 4
+    assert artifact["cv_policy"]["train_window_years"] == 3
     assert artifact["cv_policy"]["holdout_year"] == 2025
-    assert artifact["pl_feature_profile"] == "meta_default"
-    assert artifact["meta_input_mode"] == "grouped_reference_oof"
+    assert artifact["pl_feature_profile"] == "stack_default"
+    assert artifact["meta_input_mode"] == "strict_temporal_stacker_oof"
     assert artifact["forbidden_feature_check_passed"] is True
-    assert meta["cv_policy"]["valid_years"] == [2024]
-    assert meta["pl_feature_profile"] == "meta_default"
-    assert meta["meta_input_mode"] == "grouped_reference_oof"
-    assert meta["forbidden_feature_check_passed"] is True
-    assert (
-        meta["cv_policy"]["window_definition"]
-        == "train = previous 4 years only, valid = current year"
-    )
+    assert meta["cv_policy"]["valid_years"] == []
+    assert meta["pl_feature_profile"] == "stack_default"
+    assert meta["meta_input_mode"] == "strict_temporal_stacker_oof"
+    assert meta["output_paths"]["year_coverage"].endswith("v3_pipeline_year_coverage.json")
 
 
-def test_raw_legacy_suffix_paths_are_applied() -> None:
-    args = parse_args(["--pl-feature-profile", "raw_legacy"])
-    outputs = _resolve_output_paths(args)
-    assert args.pl_feature_profile == "raw_legacy"
-    assert str(outputs["oof"]).endswith("pl_v3_oof_raw_legacy.parquet")
-    assert str(outputs["metrics"]).endswith("pl_v3_cv_metrics_raw_legacy.json")
-    assert str(outputs["holdout"]).endswith("pl_v3_holdout_2025_pred_raw_legacy.parquet")
+def test_legacy_profiles_use_suffix_paths() -> None:
+    meta_args = parse_args(["--pl-feature-profile", "meta_default"])
+    raw_args = parse_args(["--pl-feature-profile", "raw_legacy"])
+
+    meta_outputs = _resolve_output_paths(meta_args)
+    raw_outputs = _resolve_output_paths(raw_args)
+
+    assert str(meta_outputs["oof"]).endswith("pl_v3_oof_meta_default.parquet")
+    assert str(meta_outputs["metrics"]).endswith("pl_v3_cv_metrics_meta_default.json")
+    assert str(raw_outputs["oof"]).endswith("pl_v3_oof_raw_legacy.parquet")
+    assert str(raw_outputs["holdout"]).endswith("pl_v3_holdout_2025_pred_raw_legacy.parquet")

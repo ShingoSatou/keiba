@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from scripts_v3.metrics_benter_v3_common import logit_clip
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,6 +32,98 @@ class PLSamplingConfig:
     mc_samples: int = 10000
     top_k: int = 3
     seed: int = 42
+
+
+def _race_centered(series: pd.Series, race_id: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(series, errors="coerce")
+    return numeric - numeric.groupby(race_id, sort=False).transform("mean")
+
+
+def _race_rank_pct(series: pd.Series, race_id: pd.Series, *, ascending: bool) -> pd.Series:
+    numeric = pd.to_numeric(series, errors="coerce")
+    return numeric.groupby(race_id, sort=False).rank(
+        method="average",
+        pct=True,
+        ascending=ascending,
+    )
+
+
+def materialize_stack_default_pl_features(
+    frame: pd.DataFrame,
+    *,
+    eps: float = 1e-6,
+) -> pd.DataFrame:
+    required = {
+        "race_id",
+        "p_win_stack",
+        "p_place_stack",
+        "place_width_log_ratio",
+        "track_code",
+        "surface",
+        "distance_m",
+        "going",
+        "weather",
+        "field_size",
+        "grade_code",
+        "race_type_code",
+        "weight_type_code",
+        "condition_code_min_age",
+    }
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise ValueError(f"Missing required columns for stack_default PL features: {missing}")
+
+    out = frame.copy()
+    out["z_win_stack"] = logit_clip(pd.to_numeric(out["p_win_stack"], errors="coerce"), eps=eps)
+    out["z_place_stack"] = logit_clip(
+        pd.to_numeric(out["p_place_stack"], errors="coerce"),
+        eps=eps,
+    )
+    out["place_width_log_ratio"] = pd.to_numeric(out["place_width_log_ratio"], errors="coerce")
+
+    out["z_win_stack_x_z_place_stack"] = out["z_win_stack"] * out["z_place_stack"]
+    out["z_win_stack_x_place_width_log_ratio"] = (
+        out["z_win_stack"] * out["place_width_log_ratio"]
+    )
+    out["z_place_stack_x_place_width_log_ratio"] = (
+        out["z_place_stack"] * out["place_width_log_ratio"]
+    )
+    out["z_win_stack_x_field_size"] = out["z_win_stack"] * pd.to_numeric(
+        out["field_size"],
+        errors="coerce",
+    )
+    out["z_place_stack_x_field_size"] = out["z_place_stack"] * pd.to_numeric(
+        out["field_size"],
+        errors="coerce",
+    )
+    out["z_win_stack_x_distance_m"] = out["z_win_stack"] * pd.to_numeric(
+        out["distance_m"],
+        errors="coerce",
+    )
+    out["z_place_stack_x_distance_m"] = out["z_place_stack"] * pd.to_numeric(
+        out["distance_m"],
+        errors="coerce",
+    )
+
+    race_id = out["race_id"]
+    out["z_win_stack_race_centered"] = _race_centered(out["z_win_stack"], race_id)
+    out["z_place_stack_race_centered"] = _race_centered(out["z_place_stack"], race_id)
+    out["place_width_log_ratio_race_centered"] = _race_centered(
+        out["place_width_log_ratio"],
+        race_id,
+    )
+    out["z_win_stack_rank_pct"] = _race_rank_pct(out["z_win_stack"], race_id, ascending=False)
+    out["z_place_stack_rank_pct"] = _race_rank_pct(
+        out["z_place_stack"],
+        race_id,
+        ascending=False,
+    )
+    out["place_width_log_ratio_rank_pct"] = _race_rank_pct(
+        out["place_width_log_ratio"],
+        race_id,
+        ascending=True,
+    )
+    return out
 
 
 def make_race_rng(seed: int, race_id: int) -> np.random.Generator:

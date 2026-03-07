@@ -31,6 +31,14 @@ def test_train_place_meta_help() -> None:
     run_cli_help("train_place_meta_v3.py")
 
 
+def test_train_win_stack_help() -> None:
+    run_cli_help("train_win_stack_v3.py")
+
+
+def test_train_place_stack_help() -> None:
+    run_cli_help("train_place_stack_v3.py")
+
+
 def test_backtest_wide_help() -> None:
     run_cli_help("backtest_wide_v3.py")
 
