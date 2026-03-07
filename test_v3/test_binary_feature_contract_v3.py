@@ -8,6 +8,7 @@ import pandas as pd
 from scripts_v3.cv_policy_v3 import FoldSpec
 from scripts_v3.feature_registry_v3 import (
     BINARY_ENTITY_ID_FEATURES,
+    BINARY_T10_ODDS_FEATURES,
     FEATURE_MANIFEST_VERSION,
     FORBIDDEN_FINAL_ODDS_FEATURES,
     POST_RACE_FORBIDDEN_FEATURES,
@@ -112,6 +113,7 @@ def test_binary_default_contract_excludes_final_odds_and_entity_ids() -> None:
 
     assert all(col not in feat_cols for col in FORBIDDEN_FINAL_ODDS_FEATURES)
     assert all(col not in feat_cols for col in BINARY_ENTITY_ID_FEATURES)
+    assert all(col not in feat_cols for col in BINARY_T10_ODDS_FEATURES)
     assert all(col not in feat_cols for col in POST_RACE_FORBIDDEN_FEATURES)
 
 

@@ -151,12 +151,23 @@ def main(argv: list[str] | None = None) -> int:
                 "odds_win_t20",
                 "odds_win_t15",
                 "odds_win_t10",
+                "p_win_odds_t20_norm",
+                "p_win_odds_t15_norm",
+                "p_win_odds_t10_norm",
+                "d_logit_win_15_20",
+                "d_logit_win_10_15",
+                "d_logit_win_10_20",
                 "odds_place_t20_lower",
                 "odds_place_t20_upper",
                 "odds_place_t15_lower",
                 "odds_place_t15_upper",
                 "odds_place_t10_lower",
                 "odds_place_t10_upper",
+                "place_mid_prob_t20",
+                "place_mid_prob_t15",
+                "place_mid_prob_t10",
+                "d_place_mid_10_20",
+                "d_place_width_10_20",
                 "place_width_log_ratio",
             ]
         ),
@@ -166,6 +177,21 @@ def main(argv: list[str] | None = None) -> int:
             "odds_win_t20_notna_rate": float(features_v3["odds_win_t20"].notna().mean()),
             "odds_win_t15_notna_rate": float(features_v3["odds_win_t15"].notna().mean()),
             "odds_win_t10_notna_rate": float(features_v3["odds_win_t10"].notna().mean()),
+            "p_win_odds_t20_norm_notna_rate": float(
+                features_v3["p_win_odds_t20_norm"].notna().mean()
+            ),
+            "p_win_odds_t15_norm_notna_rate": float(
+                features_v3["p_win_odds_t15_norm"].notna().mean()
+            ),
+            "d_logit_win_15_20_notna_rate": float(
+                features_v3["d_logit_win_15_20"].notna().mean()
+            ),
+            "d_logit_win_10_15_notna_rate": float(
+                features_v3["d_logit_win_10_15"].notna().mean()
+            ),
+            "d_logit_win_10_20_notna_rate": float(
+                features_v3["d_logit_win_10_20"].notna().mean()
+            ),
             "odds_place_t20_lower_notna_rate": float(
                 features_v3["odds_place_t20_lower"].notna().mean()
             ),
@@ -174,6 +200,21 @@ def main(argv: list[str] | None = None) -> int:
             ),
             "odds_place_t10_lower_notna_rate": float(
                 features_v3["odds_place_t10_lower"].notna().mean()
+            ),
+            "place_mid_prob_t20_notna_rate": float(
+                features_v3["place_mid_prob_t20"].notna().mean()
+            ),
+            "place_mid_prob_t15_notna_rate": float(
+                features_v3["place_mid_prob_t15"].notna().mean()
+            ),
+            "place_mid_prob_t10_notna_rate": float(
+                features_v3["place_mid_prob_t10"].notna().mean()
+            ),
+            "d_place_mid_10_20_notna_rate": float(
+                features_v3["d_place_mid_10_20"].notna().mean()
+            ),
+            "d_place_width_10_20_notna_rate": float(
+                features_v3["d_place_width_10_20"].notna().mean()
             ),
             "place_width_log_ratio_notna_rate": float(
                 features_v3["place_width_log_ratio"].notna().mean()

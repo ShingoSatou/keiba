@@ -53,3 +53,7 @@ def test_train_odds_calibrator_help() -> None:
 
 def test_predict_race_help() -> None:
     run_cli_help("predict_race_v3.py")
+
+
+def test_build_features_v3_te_help() -> None:
+    run_cli_help("build_features_v3_te.py")

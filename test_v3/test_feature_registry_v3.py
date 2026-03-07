@@ -75,16 +75,26 @@ def _sample_frame() -> pd.DataFrame:
                 "odds_win_t10": 4.5,
                 "odds_t10_data_kbn": 3,
                 "p_win_odds_t10_raw": 0.22,
+                "p_win_odds_t20_norm": 0.17,
+                "p_win_odds_t15_norm": 0.175,
                 "p_win_odds_t10_norm": 0.18,
+                "d_logit_win_15_20": 0.035065,
+                "d_logit_win_10_15": 0.035896,
+                "d_logit_win_10_20": 0.070961,
                 "odds_place_t20_lower": 1.7,
                 "odds_place_t20_upper": 2.2,
+                "place_mid_prob_t20": 0.51755,
                 "place_width_log_ratio_t20": 0.26,
                 "odds_place_t15_lower": 1.6,
                 "odds_place_t15_upper": 2.1,
+                "place_mid_prob_t15": 0.54554,
                 "place_width_log_ratio_t15": 0.27,
                 "odds_place_t10_lower": 1.5,
                 "odds_place_t10_upper": 2.0,
+                "place_mid_prob_t10": 0.57735,
                 "place_width_log_ratio_t10": 0.29,
+                "d_place_mid_10_20": 0.05980,
+                "d_place_width_10_20": 0.03,
                 "place_width_log_ratio": 0.29,
                 "odds_win_final": 3.8,
                 "odds_final_data_kbn": 4,
@@ -196,6 +206,30 @@ def test_stack_default_feature_columns_use_logit_and_interaction_contract() -> N
     assert all(col in feat_cols for col in PL_STACK_INTERACTION_FEATURES)
     assert "p_win_stack" not in feat_cols
     assert "p_place_stack" not in feat_cols
+    assert "track_code" not in feat_cols
+    assert "surface" not in feat_cols
+    assert "field_size" not in feat_cols
+    assert "distance_m" not in feat_cols
+
+
+def test_stacker_and_pl_contracts_fail_fast_on_missing_columns() -> None:
+    frame = _sample_frame()
+
+    with pytest.raises(ValueError, match="stacker:win"):
+        get_stacker_feature_columns(frame.drop(columns=["d_logit_win_10_20"]), task="win")
+
+    with pytest.raises(ValueError, match="stacker:place"):
+        get_stacker_feature_columns(frame.drop(columns=["place_mid_prob_t10"]), task="place")
+
+    with pytest.raises(ValueError, match="pl:stack_default"):
+        get_pl_feature_columns(
+            frame.drop(columns=["z_win_stack_rank_pct"]),
+            feature_profile="stack_default",
+            required_pred_cols=PL_REQUIRED_PRED_FEATURES_STACK,
+            include_context=True,
+            include_final_odds=False,
+            operational_mode="t10_only",
+        )
 
 
 def test_validate_feature_contract_raises_on_forbidden_columns() -> None:

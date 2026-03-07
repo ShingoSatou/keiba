@@ -91,6 +91,32 @@ def test_pl_stack_default_contract_uses_stack_logits_and_interactions() -> None:
     assert "p_win_stack" not in feat_cols
     assert "p_place_stack" not in feat_cols
     assert "extra_numeric_probe" not in feat_cols
+    assert "track_code" not in feat_cols
+    assert "surface" not in feat_cols
+    assert "field_size" not in feat_cols
+    assert "distance_m" not in feat_cols
+
+
+def test_pl_stack_default_materialization_only_requires_minimal_raw_inputs() -> None:
+    frame = _sample_frame().drop(
+        columns=[
+            "track_code",
+            "surface",
+            "going",
+            "weather",
+            "grade_code",
+            "race_type_code",
+            "weight_type_code",
+            "condition_code_min_age",
+        ]
+    )
+
+    out = materialize_stack_default_pl_features(frame)
+
+    assert "z_win_stack" in out.columns
+    assert "z_place_stack" in out.columns
+    assert "z_win_stack_x_field_size" in out.columns
+    assert "z_win_stack_x_distance_m" in out.columns
 
 
 def test_pl_meta_default_contract_is_compact() -> None:
