@@ -434,10 +434,15 @@ def upsert_trainer(db: Database, trainer: TrainerRecord) -> None:
 
 
 def upsert_o1_timeseries_bulk(
-    db: Database, records: list[OddsTimeSeriesRecord], race_stub_cache: set[int]
-) -> int:
+    db: Database,
+    records: list[OddsTimeSeriesRecord],
+    race_stub_cache: set[int],
+    *,
+    include_win_details: bool = True,
+    include_place_details: bool = True,
+) -> tuple[int, int]:
     if not records:
-        return 0
+        return (0, 0)
 
     header_map: dict[tuple[int, int, str], dict[str, Any]] = {}
     for record in records:
@@ -447,6 +452,10 @@ def upsert_o1_timeseries_bulk(
             "data_kbn": record.data_kbn,
             "announce_mmddhhmi": record.announce_mmddhhmi,
             "win_pool_total_100yen": record.win_pool_total_100yen,
+            "data_create_ymd": record.data_create_ymd,
+            "sale_flag_place": record.sale_flag_place,
+            "place_pay_key": record.place_pay_key,
+            "place_pool_total_100yen": record.place_pool_total_100yen,
         }
 
     for row in header_map.values():
@@ -454,57 +463,124 @@ def upsert_o1_timeseries_bulk(
 
     db.execute_many(
         """
-        INSERT INTO core.o1_header (race_id, data_kbn, announce_mmddhhmi, win_pool_total_100yen)
-        VALUES (%(race_id)s, %(data_kbn)s, %(announce_mmddhhmi)s, %(win_pool_total_100yen)s)
+        INSERT INTO core.o1_header (
+            race_id, data_kbn, announce_mmddhhmi, win_pool_total_100yen,
+            data_create_ymd, sale_flag_place, place_pay_key, place_pool_total_100yen
+        )
+        VALUES (
+            %(race_id)s, %(data_kbn)s, %(announce_mmddhhmi)s, %(win_pool_total_100yen)s,
+            %(data_create_ymd)s, %(sale_flag_place)s, %(place_pay_key)s, %(place_pool_total_100yen)s
+        )
         ON CONFLICT (race_id, data_kbn, announce_mmddhhmi) DO UPDATE SET
-            win_pool_total_100yen = EXCLUDED.win_pool_total_100yen
+            win_pool_total_100yen = EXCLUDED.win_pool_total_100yen,
+            data_create_ymd = COALESCE(EXCLUDED.data_create_ymd, core.o1_header.data_create_ymd),
+            sale_flag_place = EXCLUDED.sale_flag_place,
+            place_pay_key = EXCLUDED.place_pay_key,
+            place_pool_total_100yen = EXCLUDED.place_pool_total_100yen
         """,
         list(header_map.values()),
     )
 
-    detail_map: dict[tuple[int, int, str, int], dict[str, Any]] = {}
-    for record in records:
-        detail_key = (
-            record.race_id,
-            record.data_kbn,
-            record.announce_mmddhhmi,
-            record.horse_no,
-        )
-        detail_map[detail_key] = {
-            "race_id": record.race_id,
-            "data_kbn": record.data_kbn,
-            "announce_mmddhhmi": record.announce_mmddhhmi,
-            "horse_no": record.horse_no,
-            "win_odds_x10": record.win_odds_x10,
-            "win_popularity": record.win_popularity,
-        }
-    detail_rows = list(detail_map.values())
+    win_rows: list[dict[str, Any]] = []
+    if include_win_details:
+        win_map: dict[tuple[int, int, str, int], dict[str, Any]] = {}
+        for record in records:
+            if not record.has_win_block:
+                continue
+            detail_key = (
+                record.race_id,
+                record.data_kbn,
+                record.announce_mmddhhmi,
+                record.horse_no,
+            )
+            win_map[detail_key] = {
+                "race_id": record.race_id,
+                "data_kbn": record.data_kbn,
+                "announce_mmddhhmi": record.announce_mmddhhmi,
+                "horse_no": record.horse_no,
+                "win_odds_x10": record.win_odds_x10,
+                "win_popularity": record.win_popularity,
+            }
+        win_rows = list(win_map.values())
 
-    db.execute(
-        """
-        INSERT INTO core.o1_win (
-            race_id, data_kbn, announce_mmddhhmi,
-            horse_no, win_odds_x10, win_popularity
-        )
-        SELECT
-            x.race_id, x.data_kbn, x.announce_mmddhhmi,
-            x.horse_no, x.win_odds_x10, x.win_popularity
-        FROM jsonb_to_recordset(%(rows_json)s::jsonb) AS x(
-            race_id bigint,
-            data_kbn integer,
-            announce_mmddhhmi text,
-            horse_no integer,
-            win_odds_x10 integer,
-            win_popularity integer
-        )
-        ON CONFLICT (race_id, data_kbn, announce_mmddhhmi, horse_no)
-        DO UPDATE SET
-            win_odds_x10 = EXCLUDED.win_odds_x10,
-            win_popularity = EXCLUDED.win_popularity
-        """,
-        {"rows_json": json.dumps(detail_rows, ensure_ascii=False)},
-    )
-    return len(detail_rows)
+        if win_rows:
+            db.execute(
+                """
+                INSERT INTO core.o1_win (
+                    race_id, data_kbn, announce_mmddhhmi,
+                    horse_no, win_odds_x10, win_popularity
+                )
+                SELECT
+                    x.race_id, x.data_kbn, x.announce_mmddhhmi,
+                    x.horse_no, x.win_odds_x10, x.win_popularity
+                FROM jsonb_to_recordset(%(rows_json)s::jsonb) AS x(
+                    race_id bigint,
+                    data_kbn integer,
+                    announce_mmddhhmi text,
+                    horse_no integer,
+                    win_odds_x10 integer,
+                    win_popularity integer
+                )
+                ON CONFLICT (race_id, data_kbn, announce_mmddhhmi, horse_no)
+                DO UPDATE SET
+                    win_odds_x10 = EXCLUDED.win_odds_x10,
+                    win_popularity = EXCLUDED.win_popularity
+                """,
+                {"rows_json": json.dumps(win_rows, ensure_ascii=False)},
+            )
+
+    place_rows: list[dict[str, Any]] = []
+    if include_place_details:
+        place_map: dict[tuple[int, int, str, int], dict[str, Any]] = {}
+        for record in records:
+            if not record.has_place_block:
+                continue
+            detail_key = (
+                record.race_id,
+                record.data_kbn,
+                record.announce_mmddhhmi,
+                record.horse_no,
+            )
+            place_map[detail_key] = {
+                "race_id": record.race_id,
+                "data_kbn": record.data_kbn,
+                "announce_mmddhhmi": record.announce_mmddhhmi,
+                "horse_no": record.horse_no,
+                "min_odds_x10": record.place_min_odds_x10,
+                "max_odds_x10": record.place_max_odds_x10,
+                "place_popularity": record.place_popularity,
+            }
+        place_rows = list(place_map.values())
+
+        if place_rows:
+            db.execute(
+                """
+                INSERT INTO core.o1_place (
+                    race_id, data_kbn, announce_mmddhhmi,
+                    horse_no, min_odds_x10, max_odds_x10, place_popularity
+                )
+                SELECT
+                    x.race_id, x.data_kbn, x.announce_mmddhhmi,
+                    x.horse_no, x.min_odds_x10, x.max_odds_x10, x.place_popularity
+                FROM jsonb_to_recordset(%(rows_json)s::jsonb) AS x(
+                    race_id bigint,
+                    data_kbn integer,
+                    announce_mmddhhmi text,
+                    horse_no integer,
+                    min_odds_x10 integer,
+                    max_odds_x10 integer,
+                    place_popularity integer
+                )
+                ON CONFLICT (race_id, data_kbn, announce_mmddhhmi, horse_no)
+                DO UPDATE SET
+                    min_odds_x10 = EXCLUDED.min_odds_x10,
+                    max_odds_x10 = EXCLUDED.max_odds_x10,
+                    place_popularity = EXCLUDED.place_popularity
+                """,
+                {"rows_json": json.dumps(place_rows, ensure_ascii=False)},
+            )
+
+    return (len(win_rows), len(place_rows))
 
 
 def upsert_o3_wide_records_bulk(
@@ -893,6 +969,7 @@ def process_file(
         "result": 0,
         "payout": 0,
         "o1": 0,
+        "o1_place": 0,
         "o3": 0,
         "wh": 0,
         "mining": 0,
@@ -922,7 +999,9 @@ def process_file(
             raw_batch = []
 
         if o1_batch and (force or len(o1_batch) >= 50000):
-            stats["o1"] += upsert_o1_timeseries_bulk(db, o1_batch, race_stub_cache)
+            win_rows, place_rows = upsert_o1_timeseries_bulk(db, o1_batch, race_stub_cache)
+            stats["o1"] += win_rows
+            stats["o1_place"] += place_rows
             o1_batch = []
 
         if o3_batch and (force or len(o3_batch) >= 30000):

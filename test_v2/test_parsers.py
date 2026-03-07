@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 from app.infrastructure.parsers import (
+    O1_DATA_CREATE_YMD_START,
+    O1_PLACE_PAY_KEY_START,
+    O1_PLACE_POOL_START,
+    O1_PLACE_START,
+    O1_SALE_FLAG_PLACE_START,
+    O1_WIN_POOL_START,
     O3_ANNOUNCE_MMDDHHMI_START,
     O3_DATA_CREATE_YMD_START,
     O3_DATA_KBN_START,
@@ -262,6 +268,50 @@ class TestOddsTimeSeriesRecordParser:
         assert by_horse[2].win_popularity == 2
         assert by_horse[3].win_odds_x10 == 125
         assert by_horse[3].win_popularity == 3
+
+    def test_parse_includes_place_odds_and_header_fields(self):
+        b_payload = bytearray(b" " * 962)
+
+        def put(offset: int, text: str):
+            b = text.encode("cp932")
+            b_payload[offset : offset + len(b)] = b
+
+        put(0, "O1")
+        put(2, "1")
+        put(O1_DATA_CREATE_YMD_START, "20260208")
+        put(11, "2026020805010101")
+        put(27, "02080512")
+        put(O1_SALE_FLAG_PLACE_START, "7")
+        put(O1_PLACE_PAY_KEY_START, "3")
+        put(O1_PLACE_START, "010010001501")
+        put(O1_PLACE_START + 12, "020000000002")
+        put(O1_PLACE_START + 24, "03****----**")
+        put(O1_WIN_POOL_START, "00012345678")
+        put(O1_PLACE_POOL_START, "00023456789")
+
+        payload = bytes(b_payload).decode("cp932", errors="replace")
+        rows = OddsTimeSeriesRecord.parse(payload)
+
+        assert len(rows) == 3
+        by_horse = {row.horse_no: row for row in rows}
+
+        assert by_horse[1].data_create_ymd == "20260208"
+        assert by_horse[1].sale_flag_place == 7
+        assert by_horse[1].place_pay_key == 3
+        assert by_horse[1].place_min_odds_x10 == 10
+        assert by_horse[1].place_max_odds_x10 == 15
+        assert by_horse[1].place_popularity == 1
+        assert by_horse[1].place_pool_total_100yen == 23456789
+        assert by_horse[1].has_place_block is True
+        assert by_horse[1].has_win_block is False
+
+        assert by_horse[2].place_min_odds_x10 == 0
+        assert by_horse[2].place_max_odds_x10 == 0
+        assert by_horse[2].place_popularity == 2
+
+        assert by_horse[3].place_min_odds_x10 is None
+        assert by_horse[3].place_max_odds_x10 is None
+        assert by_horse[3].place_popularity is None
 
 
 class TestO3Parser:

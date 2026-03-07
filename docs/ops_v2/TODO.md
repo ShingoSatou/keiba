@@ -21,25 +21,34 @@
 - [x] [P0] `migrations_v2/0003_event_change_add_data_kbn.sql` を追加
 - [x] [P0] `migrations_v2/0004_ensure_o3_tables.sql` を追加
 - [x] [P0] `migrations_v2/0005_runner_add_code_columns.sql` を追加
+- [x] [P0] `migrations_v2/0006_o1_place_timeseries.sql` を追加
 - [x] [P0] `app/infrastructure/parsers.py` に `O3` パーサを追加
+- [x] [P0] `app/infrastructure/parsers.py` の `O1` 時系列パーサを複勝・票数合計対応に更新
 - [x] [P0] `scripts_v2/load_to_db.py` を実装
+- [x] [P0] `scripts_v2/backfill_o1_place_from_raw_v2.py` を追加
 - [x] [P0] `RACE/DIFF/MING/0B41/0B11/0B14/0B13/0B17` ルートを実装
 - [x] [P0] 中央競馬フィルタ（01-10）を取り込み時に適用
 
 ### テスト
 - [x] [P0] `test_v2/test_parsers.py` を追加（O3含む）
 - [x] [P0] `test_v2/test_load_to_db.py` を追加
+- [x] [P0] `test_v2/test_backfill_o1_place_from_raw_v2.py` を追加
 - [x] [P0] `uv run pytest -q test_v2/test_parsers.py test_v2/test_load_to_db.py test_v2/test_migrate_discover.py`
+- [x] [P0] `uv run pytest -s test_v2/test_parsers.py test_v2/test_load_to_db.py test_v2/test_backfill_o1_place_from_raw_v2.py`
 
 ### DB確認
 - [x] [P0] `.env` を `keiba_v2` に切り替え
 - [x] [P0] `keiba_v2` をクリーン再構築（schema reset + migrations `0001`〜`0005` 適用 ※`migrations_v2/`）
 - [x] [P0] 実データロード（`RACE/DIFF/MING/0B41(merged)/0B11/0B14/0B13/0B17`）
+- [x] [P0] `0006_o1_place_timeseries.sql` を適用し、`core.o1_place` を追加
+- [x] [P0] `raw.jv_raw` の `0B41/RACE O1` から `core.o1_place` を `2016-01-05`〜`2026-02-15` で backfill
+- [x] [P0] `core.o1_place=75,485,925`、`core.o1_header` の複勝列 populated、サンプル `201601050601/01041831/data_kbn=1` 一致を確認
 - [x] [P0] 品質チェック（非中央=0 / stub race=709 / WH異常=0 / horse_no=99が12件）
 - [x] [P0] RA条件コード系オフセットを実データで補正（`race_type_code/weight_type_code/condition_code_min_age`）
 - [x] [P0] RA/SEのbackfillを再実行し、`core.race`/`core.runner.sex` を更新
 - [ ] [P2] （メモ）stub race（`distance_m<=0` かつ/または `surface<=0`）が 709 件（2016以降: 354 / 2016以前: 355）。Phase 2 で除外/補完方針が必要
 - [ ] [P2] （メモ）`core.o1_win.win_odds_x10` は「単勝オッズ×10（整数）」で、欠損が多い（`NULL`=106,071 / `0`=951,416）。下流では `NULL/0` を欠損扱いに統一する想定
+- [ ] [P2] （メモ）`core.o1_place.min_odds_x10/max_odds_x10` は「複勝オッズ×10（整数）」で、欠損が多い（`NULL`=106,071 / `0`=923,244）。下流では `NULL/0` を欠損扱いに統一する想定
 - [ ] [P2] （メモ）`core.o3_wide.min_odds_x10` は「ワイド確定オッズ（下限）×10」で、`NULL`=29,215。JV側の `*****` マスク（発売なし/発売停止/取消等）に注意
 - [ ] [P2] （メモ）`core.runner.horse_no=99`（取消/除外）=12件。馬番 1-18 前提処理は除外ロジックを入れる
 

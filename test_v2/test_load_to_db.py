@@ -66,15 +66,18 @@ def test_insert_event_change_includes_payload_md5_and_data_kbn(monkeypatch):
 
 
 def test_upsert_o1_timeseries_bulk_allows_null_win_odds(monkeypatch):
-    captured = {"detail_rows": None}
+    captured = {"header_rows": None, "win_rows": None, "place_rows": None}
 
     class _CaptureDB:
         def execute_many(self, sql, params):
-            _ = (sql, params)
+            if "core.o1_header" in sql:
+                captured["header_rows"] = params
 
         def execute(self, sql, params):
-            if "jsonb_to_recordset" in sql:
-                captured["detail_rows"] = json.loads(params["rows_json"])
+            if "core.o1_win" in sql:
+                captured["win_rows"] = json.loads(params["rows_json"])
+            elif "core.o1_place" in sql:
+                captured["place_rows"] = json.loads(params["rows_json"])
 
     monkeypatch.setattr(load_to_db, "ensure_race_stub", lambda db, race_id, cache=None: None)
 
@@ -87,25 +90,28 @@ def test_upsert_o1_timeseries_bulk_allows_null_win_odds(monkeypatch):
             win_odds_x10=None,
             win_popularity=1,
             win_pool_total_100yen=123456,
+            has_win_block=True,
         )
     ]
     inserted = load_to_db.upsert_o1_timeseries_bulk(_CaptureDB(), rows, race_stub_cache=set())
 
-    assert inserted == 1
-    assert captured["detail_rows"] is not None
-    assert captured["detail_rows"][0]["win_odds_x10"] is None
+    assert inserted == (1, 0)
+    assert captured["header_rows"] is not None
+    assert captured["win_rows"] is not None
+    assert captured["win_rows"][0]["win_odds_x10"] is None
+    assert captured["place_rows"] is None
 
 
 def test_upsert_o1_timeseries_bulk_deduplicates_conflict_keys(monkeypatch):
-    captured = {"detail_rows": None}
+    captured = {"win_rows": None}
 
     class _CaptureDB:
         def execute_many(self, sql, params):
             _ = (sql, params)
 
         def execute(self, sql, params):
-            if "jsonb_to_recordset" in sql:
-                captured["detail_rows"] = json.loads(params["rows_json"])
+            if "core.o1_win" in sql:
+                captured["win_rows"] = json.loads(params["rows_json"])
 
     monkeypatch.setattr(load_to_db, "ensure_race_stub", lambda db, race_id, cache=None: None)
 
@@ -118,6 +124,7 @@ def test_upsert_o1_timeseries_bulk_deduplicates_conflict_keys(monkeypatch):
             win_odds_x10=123,
             win_popularity=2,
             win_pool_total_100yen=123456,
+            has_win_block=True,
         ),
         OddsTimeSeriesRecord(
             race_id=202602080101,
@@ -127,15 +134,65 @@ def test_upsert_o1_timeseries_bulk_deduplicates_conflict_keys(monkeypatch):
             win_odds_x10=145,
             win_popularity=3,
             win_pool_total_100yen=123456,
+            has_win_block=True,
         ),
     ]
     inserted = load_to_db.upsert_o1_timeseries_bulk(_CaptureDB(), rows, race_stub_cache=set())
 
-    assert inserted == 1
-    assert captured["detail_rows"] is not None
-    assert len(captured["detail_rows"]) == 1
-    assert captured["detail_rows"][0]["win_odds_x10"] == 145
-    assert captured["detail_rows"][0]["win_popularity"] == 3
+    assert inserted == (1, 0)
+    assert captured["win_rows"] is not None
+    assert len(captured["win_rows"]) == 1
+    assert captured["win_rows"][0]["win_odds_x10"] == 145
+    assert captured["win_rows"][0]["win_popularity"] == 3
+
+
+def test_upsert_o1_timeseries_bulk_writes_place_rows_and_header_fields(monkeypatch):
+    captured = {"header_rows": None, "place_rows": None}
+
+    class _CaptureDB:
+        def execute_many(self, sql, params):
+            if "core.o1_header" in sql:
+                captured["header_rows"] = params
+
+        def execute(self, sql, params):
+            if "core.o1_place" in sql:
+                captured["place_rows"] = json.loads(params["rows_json"])
+
+    monkeypatch.setattr(load_to_db, "ensure_race_stub", lambda db, race_id, cache=None: None)
+
+    rows = [
+        OddsTimeSeriesRecord(
+            race_id=202602080101,
+            data_kbn=4,
+            announce_mmddhhmi="00000000",
+            horse_no=1,
+            win_odds_x10=123,
+            win_popularity=2,
+            win_pool_total_100yen=123456,
+            data_create_ymd="20260208",
+            sale_flag_place=7,
+            place_pay_key=3,
+            place_min_odds_x10=145,
+            place_max_odds_x10=215,
+            place_popularity=4,
+            place_pool_total_100yen=234567,
+            has_win_block=True,
+            has_place_block=True,
+        )
+    ]
+
+    inserted = load_to_db.upsert_o1_timeseries_bulk(_CaptureDB(), rows, race_stub_cache=set())
+
+    assert inserted == (1, 1)
+    assert captured["header_rows"] is not None
+    assert captured["header_rows"][0]["sale_flag_place"] == 7
+    assert captured["header_rows"][0]["place_pay_key"] == 3
+    assert captured["header_rows"][0]["place_pool_total_100yen"] == 234567
+    assert captured["header_rows"][0]["data_create_ymd"] == "20260208"
+    assert captured["place_rows"] is not None
+    assert captured["place_rows"][0]["min_odds_x10"] == 145
+    assert captured["place_rows"][0]["max_odds_x10"] == 215
+    assert captured["place_rows"][0]["place_popularity"] == 4
 
 
 def test_upsert_o3_wide_records_bulk_allows_null_odds(monkeypatch):
