@@ -105,20 +105,22 @@ STACKER_REQUIRED_PRED_FEATURES_PLACE = [
     "p_place_cat",
 ]
 STACKER_WIN_ODDS_FEATURES = [
-    "odds_win_t20",
-    "odds_win_t15",
-    "odds_win_t10",
+    "p_win_odds_t20_norm",
+    "p_win_odds_t15_norm",
+    "p_win_odds_t10_norm",
+    "d_logit_win_15_20",
+    "d_logit_win_10_15",
+    "d_logit_win_10_20",
 ]
 STACKER_PLACE_ODDS_FEATURES = [
-    "odds_place_t20_lower",
-    "odds_place_t20_upper",
+    "place_mid_prob_t20",
     "place_width_log_ratio_t20",
-    "odds_place_t15_lower",
-    "odds_place_t15_upper",
+    "place_mid_prob_t15",
     "place_width_log_ratio_t15",
-    "odds_place_t10_lower",
-    "odds_place_t10_upper",
+    "place_mid_prob_t10",
     "place_width_log_ratio_t10",
+    "d_place_mid_10_20",
+    "d_place_width_10_20",
 ]
 
 PL_REQUIRED_PRED_FEATURES_META = [
@@ -152,16 +154,6 @@ PL_STACK_CORE_FEATURES = [
     "place_width_log_ratio",
 ]
 PL_STACK_INTERACTION_FEATURES = [
-    "track_code",
-    "surface",
-    "distance_m",
-    "going",
-    "weather",
-    "field_size",
-    "grade_code",
-    "race_type_code",
-    "weight_type_code",
-    "condition_code_min_age",
     "z_win_stack_x_z_place_stack",
     "z_win_stack_x_place_width_log_ratio",
     "z_place_stack_x_place_width_log_ratio",
@@ -238,6 +230,26 @@ def _dedupe_existing(frame: pd.DataFrame, cols: list[str]) -> list[str]:
     return deduped
 
 
+def _dedupe_preserve_order(cols: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for col in cols:
+        if col in seen:
+            continue
+        seen.add(col)
+        deduped.append(col)
+    return deduped
+
+
+def _require_existing_columns(frame: pd.DataFrame, cols: list[str], *, stage: str) -> list[str]:
+    required = _dedupe_preserve_order(cols)
+    existing = set(map(str, frame.columns))
+    missing = [col for col in required if col not in existing]
+    if missing:
+        raise ValueError(f"{stage}: missing required feature columns: {missing}")
+    return required
+
+
 def _is_binary_te_candidate_column(column: str) -> bool:
     lowered = str(column).lower()
     return (
@@ -285,7 +297,7 @@ def get_binary_safe_te_feature_columns(
 ) -> list[str]:
     _validate_operational_mode(operational_mode)
 
-    base_contract_columns = [*BINARY_BASE_FEATURES, *BINARY_T10_ODDS_FEATURES]
+    base_contract_columns = [*BINARY_BASE_FEATURES]
     if operational_mode == "includes_final":
         base_contract_columns.extend(FINAL_ODDS_BASE_FEATURES)
     if include_entity_ids:
@@ -312,7 +324,7 @@ def get_binary_feature_columns(
 ) -> list[str]:
     _validate_operational_mode(operational_mode)
 
-    cols = [*BINARY_BASE_FEATURES, *BINARY_T10_ODDS_FEATURES]
+    cols = [*BINARY_BASE_FEATURES]
     if operational_mode == "includes_final":
         cols.extend(FINAL_ODDS_BASE_FEATURES)
     if include_entity_ids:
@@ -357,7 +369,7 @@ def get_stacker_feature_columns(
             *STACKER_CONTEXT_FEATURES,
         ]
 
-    feature_cols = _dedupe_existing(frame, cols)
+    feature_cols = _require_existing_columns(frame, cols, stage=f"stacker:{task}")
     validate_feature_contract(
         feature_cols,
         operational_mode=operational_mode,
@@ -386,7 +398,7 @@ def get_pl_feature_columns(
         if include_context:
             cols.extend(PL_CONTEXT_FEATURES_SMALL)
 
-    feature_cols = _dedupe_existing(frame, cols)
+    feature_cols = _require_existing_columns(frame, cols, stage=f"pl:{feature_profile}")
     validate_feature_contract(
         feature_cols,
         operational_mode=operational_mode,

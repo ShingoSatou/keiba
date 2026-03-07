@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import joblib
@@ -76,8 +77,13 @@ def _input_frame() -> pd.DataFrame:
             "odds_win_t20": [4.2, 12.0],
             "odds_win_t15": [4.0, 11.5],
             "odds_win_t10": [3.8, 11.2],
+            "p_win_odds_t20_norm": [0.74, 0.26],
+            "p_win_odds_t15_norm": [0.742, 0.258],
             "p_win_odds_t10_raw": [0.26, 0.09],
             "p_win_odds_t10_norm": [0.23, 0.08],
+            "d_logit_win_15_20": [0.01, -0.01],
+            "d_logit_win_10_15": [0.02, -0.02],
+            "d_logit_win_10_20": [0.03, -0.03],
             "odds_t10_data_kbn": [3, 3],
             "odds_win_t20_asof_dt": ["2025-03-01 14:40:00", "2025-03-01 14:40:00"],
             "odds_win_t20_announce_dt": ["2025-03-01 14:39:00", "2025-03-01 14:39:00"],
@@ -87,13 +93,18 @@ def _input_frame() -> pd.DataFrame:
             "odds_t10_announce_dt": ["2025-03-01 14:49:00", "2025-03-01 14:49:00"],
             "odds_place_t20_lower": [1.5, 2.7],
             "odds_place_t20_upper": [1.9, 3.5],
+            "place_mid_prob_t20": [0.592, 0.325],
             "place_width_log_ratio_t20": [0.236, 0.260],
             "odds_place_t15_lower": [1.5, 2.6],
             "odds_place_t15_upper": [1.9, 3.4],
+            "place_mid_prob_t15": [0.592, 0.336],
             "place_width_log_ratio_t15": [0.236, 0.268],
             "odds_place_t10_lower": [1.4, 2.5],
             "odds_place_t10_upper": [1.8, 3.3],
+            "place_mid_prob_t10": [0.630, 0.348],
             "place_width_log_ratio_t10": [0.251, 0.278],
+            "d_place_mid_10_20": [0.038, 0.023],
+            "d_place_width_10_20": [0.015, 0.018],
             "place_width_log_ratio": [0.251, 0.278],
             "odds_place_t20_asof_dt": ["2025-03-01 14:40:00", "2025-03-01 14:40:00"],
             "odds_place_t20_announce_dt": ["2025-03-01 14:39:00", "2025-03-01 14:39:00"],
@@ -109,6 +120,20 @@ def _input_frame() -> pd.DataFrame:
             "p_place_cat": [0.72, 0.43],
         }
     )
+
+
+def _stack_meta_json(
+    pred_col: str,
+    feature_columns: list[str],
+    model_path: Path,
+) -> dict[str, object]:
+    return {
+        "task": "win" if pred_col == "p_win_stack" else "place",
+        "model": "lgbm",
+        "pred_col": pred_col,
+        "feature_columns": feature_columns,
+        "output_paths": {"main_model": str(model_path)},
+    }
 
 
 def test_score_with_pl_rejects_final_features_in_t10_path() -> None:
@@ -224,3 +249,58 @@ def test_predict_race_stack_default_path_materializes_stack_inputs(tmp_path: Pat
     assert expected_cols.issubset(out.columns)
     assert out["pl_score"].notna().all()
     assert out["p_top3"].notna().all()
+
+
+def test_predict_race_stacker_meta_fails_fast_on_missing_market_features(tmp_path: Path) -> None:
+    input_path = tmp_path / "race_missing_stack_feature.parquet"
+    pl_model = tmp_path / "pl_stack.joblib"
+    stack_model_path = tmp_path / "stack_model.txt"
+    win_stack_meta = tmp_path / "win_stack_meta.json"
+    place_stack_meta = tmp_path / "place_stack_meta.json"
+
+    frame = _input_frame().drop(columns=["d_logit_win_10_20"])
+    frame.to_parquet(input_path, index=False)
+
+    joblib.dump(
+        _pl_artifact(
+            [*PL_STACK_CORE_FEATURES, *PL_STACK_INTERACTION_FEATURES],
+            profile="stack_default",
+        ),
+        pl_model,
+    )
+    stack_model_path.write_text("placeholder", encoding="utf-8")
+    win_stack_meta.write_text(
+        json.dumps(
+            _stack_meta_json(
+                "p_win_stack",
+                ["p_win_odds_t20_norm", "d_logit_win_10_20"],
+                stack_model_path,
+            )
+        ),
+        encoding="utf-8",
+    )
+    place_stack_meta.write_text(
+        json.dumps(
+            _stack_meta_json(
+                "p_place_stack",
+                ["place_mid_prob_t10", "d_place_width_10_20"],
+                stack_model_path,
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match="Input missing model features"):
+        main(
+            [
+                "--input",
+                str(input_path),
+                "--pl-model",
+                str(pl_model),
+                "--skip-base-model-inference",
+                "--win-stack-meta",
+                str(win_stack_meta),
+                "--place-stack-meta",
+                str(place_stack_meta),
+            ]
+        )

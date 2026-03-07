@@ -6,6 +6,7 @@ from datetime import timedelta
 import numpy as np
 import pandas as pd
 
+from scripts_v3.metrics_benter_v3_common import logit_clip
 from scripts_v3.v3_common import build_race_datetime
 
 FINAL_KBN_PRIORITY = {4: 0, 3: 1, 2: 2, 1: 3}
@@ -17,7 +18,7 @@ SNAPSHOT_MINUTES = (20, 15, 10)
 class OddsSnapshotSpec:
     mode: str
     odds_col: str
-    raw_col: str
+    raw_col: str | None
     norm_col: str
 
 
@@ -26,6 +27,18 @@ FINAL_SPEC = OddsSnapshotSpec(
     odds_col="odds_win_final",
     raw_col="p_win_odds_final_raw",
     norm_col="p_win_odds_final_norm",
+)
+T20_SPEC = OddsSnapshotSpec(
+    mode="t20",
+    odds_col="odds_win_t20",
+    raw_col=None,
+    norm_col="p_win_odds_t20_norm",
+)
+T15_SPEC = OddsSnapshotSpec(
+    mode="t15",
+    odds_col="odds_win_t15",
+    raw_col=None,
+    norm_col="p_win_odds_t15_norm",
 )
 T10_SPEC = OddsSnapshotSpec(
     mode="t10",
@@ -379,11 +392,13 @@ def select_place_t10_snapshot(odds_long: pd.DataFrame) -> pd.DataFrame:
 def add_implied_probability_columns(df: pd.DataFrame, spec: OddsSnapshotSpec) -> pd.DataFrame:
     out = df.copy()
     odds = pd.to_numeric(out[spec.odds_col], errors="coerce")
-    out[spec.raw_col] = np.where(odds > 0.0, 1.0 / odds, np.nan)
-    race_sum = out.groupby("race_id", sort=False)[spec.raw_col].transform(
+    implied = pd.Series(np.where(odds > 0.0, 1.0 / odds, np.nan), index=out.index, dtype=float)
+    if spec.raw_col is not None:
+        out[spec.raw_col] = implied
+    race_sum = implied.groupby(out["race_id"], sort=False).transform(
         lambda s: float(s.sum(min_count=1))
     )
-    out[spec.norm_col] = np.where(race_sum > 0.0, out[spec.raw_col] / race_sum, np.nan)
+    out[spec.norm_col] = np.where(race_sum > 0.0, implied / race_sum, np.nan)
     return out
 
 
@@ -402,12 +417,45 @@ def _compute_place_width_log_ratio(
 ) -> pd.Series:
     lower = pd.to_numeric(frame[lower_col], errors="coerce")
     upper = pd.to_numeric(frame[upper_col], errors="coerce")
-    valid = lower.notna() & upper.notna() & (lower > 0.0) & (upper >= lower)
+    low = np.minimum(lower, upper)
+    high = np.maximum(lower, upper)
+    valid = low.notna() & high.notna() & (low > 0.0) & (high > 0.0)
     values = np.full(len(frame), np.nan, dtype=float)
     values[valid.to_numpy()] = np.log(
-        upper[valid].to_numpy(dtype=float) / lower[valid].to_numpy(dtype=float)
+        high[valid].to_numpy(dtype=float) / low[valid].to_numpy(dtype=float)
     )
     return pd.Series(values, index=frame.index, dtype=float)
+
+
+def _compute_place_mid_prob(
+    frame: pd.DataFrame,
+    lower_col: str,
+    upper_col: str,
+) -> pd.Series:
+    lower = pd.to_numeric(frame[lower_col], errors="coerce")
+    upper = pd.to_numeric(frame[upper_col], errors="coerce")
+    low = np.minimum(lower, upper)
+    high = np.maximum(lower, upper)
+    valid = low.notna() & high.notna() & (low > 0.0) & (high > 0.0)
+    values = np.full(len(frame), np.nan, dtype=float)
+    values[valid.to_numpy()] = 1.0 / np.sqrt(
+        low[valid].to_numpy(dtype=float) * high[valid].to_numpy(dtype=float)
+    )
+    return pd.Series(values, index=frame.index, dtype=float)
+
+
+def _compute_logit_delta(
+    frame: pd.DataFrame,
+    newer_col: str,
+    older_col: str,
+    *,
+    eps: float = 1e-6,
+) -> pd.Series:
+    newer = pd.to_numeric(frame[newer_col], errors="coerce")
+    older = pd.to_numeric(frame[older_col], errors="coerce")
+    newer_logit = pd.Series(logit_clip(newer.to_numpy(dtype=float), eps=eps), index=frame.index)
+    older_logit = pd.Series(logit_clip(older.to_numpy(dtype=float), eps=eps), index=frame.index)
+    return (newer_logit - older_logit).astype(float)
 
 
 def merge_odds_features(
@@ -477,15 +525,44 @@ def merge_odds_features(
     )
 
     out = add_implied_probability_columns(out, FINAL_SPEC)
+    out = add_implied_probability_columns(out, T20_SPEC)
+    out = add_implied_probability_columns(out, T15_SPEC)
     out = add_implied_probability_columns(out, T10_SPEC)
 
+    out["d_logit_win_15_20"] = _compute_logit_delta(
+        out,
+        "p_win_odds_t15_norm",
+        "p_win_odds_t20_norm",
+    )
+    out["d_logit_win_10_15"] = _compute_logit_delta(
+        out,
+        "p_win_odds_t10_norm",
+        "p_win_odds_t15_norm",
+    )
+    out["d_logit_win_10_20"] = _compute_logit_delta(
+        out,
+        "p_win_odds_t10_norm",
+        "p_win_odds_t20_norm",
+    )
+
     for minutes in SNAPSHOT_MINUTES:
+        out[f"place_mid_prob_t{minutes}"] = _compute_place_mid_prob(
+            out,
+            f"odds_place_t{minutes}_lower",
+            f"odds_place_t{minutes}_upper",
+        )
         out[f"place_width_log_ratio_t{minutes}"] = _compute_place_width_log_ratio(
             out,
             f"odds_place_t{minutes}_lower",
             f"odds_place_t{minutes}_upper",
         )
     out["place_width_log_ratio"] = out["place_width_log_ratio_t10"]
+    out["d_place_mid_10_20"] = pd.to_numeric(
+        out["place_mid_prob_t10"], errors="coerce"
+    ) - pd.to_numeric(out["place_mid_prob_t20"], errors="coerce")
+    out["d_place_width_10_20"] = pd.to_numeric(
+        out["place_width_log_ratio_t10"], errors="coerce"
+    ) - pd.to_numeric(out["place_width_log_ratio_t20"], errors="coerce")
     return out
 
 
@@ -539,6 +616,8 @@ def assert_t10_no_future_reference(
 __all__ = [
     "FINAL_SPEC",
     "SNAPSHOT_MINUTES",
+    "T15_SPEC",
+    "T20_SPEC",
     "T10_SPEC",
     "add_implied_probability_columns",
     "assert_asof_no_future_reference",

@@ -58,16 +58,8 @@ def materialize_stack_default_pl_features(
         "p_win_stack",
         "p_place_stack",
         "place_width_log_ratio",
-        "track_code",
-        "surface",
         "distance_m",
-        "going",
-        "weather",
         "field_size",
-        "grade_code",
-        "race_type_code",
-        "weight_type_code",
-        "condition_code_min_age",
     }
     missing = sorted(required - set(frame.columns))
     if missing:

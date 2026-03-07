@@ -19,6 +19,12 @@
 
 | id | title | version | status | file |
 |---|---|---|---|---|
+| `2026-03-07_v3-ci-format-fix-pr41` | PR #41 の CI format failure 修正 | v3 | `done` | [task](./done/2026/2026-03-07_v3-ci-format-fix-pr41.md) |
+| `2026-03-07_v3-docs-pr` | v3 docs 更新と PR 作成 | v3 | `done` | [task](./done/2026/2026-03-07_v3-docs-pr.md) |
+| `2026-03-07_v3-te-build-entrypoint` | v3 TE 生成入口の固定化 | v3 | `done` | [task](./done/2026/2026-03-07_v3-te-build-entrypoint.md) |
+| `2026-03-07_v3-binary6-retrain-end-to-end` | v3 binary 6本再学習と end-to-end 検証 | v3 | `done` | [task](./done/2026/2026-03-07_v3-binary6-retrain-end-to-end.md) |
+| `2026-03-07_v3-feature-contract-retrain-eval` | v3 特徴量再生成と stacker / PL 再学習・評価 | v3 | `done` | [task](./done/2026/2026-03-07_v3-feature-contract-retrain-eval.md) |
+| `2026-03-07_v3-feature-contract-refactor` | v3 特徴量契約再設計: binary/stack/PL の層責務整理 | v3 | `done` | [task](./done/2026/2026-03-07_v3-feature-contract-refactor.md) |
 | `2026-03-07_v3-optuna-boundary-doc` | v3 binary Optuna 境界張り付き所見のドキュメント化 | v3 | `done` | [task](./done/2026/2026-03-07_v3-optuna-boundary-doc.md) |
 | `2026-03-07_v3-te-leakage-audit-fix` | v3 TE リーク監査と必要時の修正・xgb 再学習 | v3 | `done` | [task](./done/2026/2026-03-07_v3-te-leakage-audit-fix.md) |
 | `2026-03-07_v3-binary-optuna-tuner` | v3 binary Optuna tuner 追加 | v3 | `done` | [task](./done/2026/2026-03-07_v3-binary-optuna-tuner.md) |
