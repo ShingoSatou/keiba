@@ -82,9 +82,7 @@ def materialize_stack_default_pl_features(
     out["place_width_log_ratio"] = pd.to_numeric(out["place_width_log_ratio"], errors="coerce")
 
     out["z_win_stack_x_z_place_stack"] = out["z_win_stack"] * out["z_place_stack"]
-    out["z_win_stack_x_place_width_log_ratio"] = (
-        out["z_win_stack"] * out["place_width_log_ratio"]
-    )
+    out["z_win_stack_x_place_width_log_ratio"] = out["z_win_stack"] * out["place_width_log_ratio"]
     out["z_place_stack_x_place_width_log_ratio"] = (
         out["z_place_stack"] * out["place_width_log_ratio"]
     )

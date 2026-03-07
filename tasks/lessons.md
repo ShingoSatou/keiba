@@ -10,3 +10,4 @@
 
 - PR 前の確認は CI と同じ入口に寄せる。repo では `bash scripts/check_ci.sh check` を使い、format 漏れは `bash scripts/check_ci.sh fix` で先に潰す。
 - stacker / feature contract の設計変更では、指定された入力列以外を convenience で足さず、snapshot 種別と odds 変換の指示をそのまま固定する。
+- TE 系特徴量は、同一の初期日付行が future `to_date` の伸長だけで変わらないことを確認し、平滑化 prior も pre-output history のみから作る。

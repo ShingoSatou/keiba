@@ -588,8 +588,10 @@ def main(
     outputs["oof"].parent.mkdir(parents=True, exist_ok=True)
     oof.to_parquet(outputs["oof"], index=False)
 
-    final_iterations = int(round(float(np.median(best_iterations)))) if best_iterations else int(
-        args.num_boost_round
+    final_iterations = (
+        int(round(float(np.median(best_iterations))))
+        if best_iterations
+        else int(args.num_boost_round)
     )
     recent_years = select_recent_window_years(
         years,
@@ -715,10 +717,7 @@ def main(
     if holdout_input is not None:
         input_paths["holdout_input"] = str(holdout_input)
         input_paths.update(
-            {
-                f"base_holdout_{k}": str(v)
-                for k, v in _prediction_paths(args, holdout=True).items()
-            }
+            {f"base_holdout_{k}": str(v) for k, v in _prediction_paths(args, holdout=True).items()}
         )
 
     save_json(

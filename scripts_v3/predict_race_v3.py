@@ -47,8 +47,7 @@ DEFAULT_PLACE_STACK_META = "models/place_stack_bundle_meta_v3.json"
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Predict single-race p_top3 (and optional p_wide) "
-            "with v3 base->stacker->PL path."
+            "Predict single-race p_top3 (and optional p_wide) with v3 base->stacker->PL path."
         )
     )
     parser.add_argument(

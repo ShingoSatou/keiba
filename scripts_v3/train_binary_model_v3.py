@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -55,6 +57,37 @@ DEFAULT_SEED = 42
 
 TASK_CHOICES = ("win", "place")
 MODEL_CHOICES = ("lgbm", "xgb", "cat")
+MODEL_PARAM_CLI_FLAGS: dict[str, dict[str, str]] = {
+    "lgbm": {
+        "learning_rate": "--learning-rate",
+        "num_leaves": "--num-leaves",
+        "min_data_in_leaf": "--min-data-in-leaf",
+        "lambda_l1": "--lambda-l1",
+        "lambda_l2": "--lambda-l2",
+        "feature_fraction": "--feature-fraction",
+        "bagging_fraction": "--bagging-fraction",
+        "bagging_freq": "--bagging-freq",
+    },
+    "xgb": {
+        "learning_rate": "--learning-rate",
+        "max_depth": "--max-depth",
+        "min_child_weight": "--min-child-weight",
+        "gamma": "--gamma",
+        "subsample": "--subsample",
+        "colsample_bytree": "--colsample-bytree",
+        "reg_alpha": "--reg-alpha",
+        "reg_lambda": "--reg-lambda",
+    },
+    "cat": {
+        "learning_rate": "--learning-rate",
+        "depth": "--depth",
+        "l2_leaf_reg": "--l2-leaf-reg",
+        "random_strength": "--random-strength",
+        "bagging_temperature": "--bagging-temperature",
+        "rsm": "--rsm",
+        "min_data_in_leaf": "--min-data-in-leaf",
+    },
+}
 
 
 def _label_col(task: str) -> str:
@@ -75,6 +108,21 @@ def _default_ext(model: str) -> str:
     raise ValueError(f"Unknown model: {model}")
 
 
+def _model_thread_count() -> int:
+    raw = str(os.environ.get("V3_MODEL_THREADS", "")).strip()
+    if not raw:
+        return -1
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Ignoring invalid V3_MODEL_THREADS=%s; fallback to -1", raw)
+        return -1
+    if value == 0:
+        logger.warning("Ignoring V3_MODEL_THREADS=0; fallback to -1")
+        return -1
+    return value
+
+
 def parse_args(
     argv: list[str] | None = None,
     *,
@@ -86,6 +134,15 @@ def parse_args(
     )
     parser.add_argument("--task", choices=list(TASK_CHOICES), default=default_task or "win")
     parser.add_argument("--model", choices=list(MODEL_CHOICES), default=default_model or "lgbm")
+    parser.add_argument(
+        "--params-json",
+        default="",
+        help=(
+            "Optional JSON file to set default input and model params. "
+            "If omitted, automatically loads data/oof/binary_v3_{task}_{model}_best_params.json "
+            "when present. Explicit CLI flags take precedence."
+        ),
+    )
     parser.add_argument("--input", default="data/features_v3.parquet")
     parser.add_argument("--oof-output", default="")
     parser.add_argument("--metrics-output", default="")
@@ -177,6 +234,126 @@ def _validate_args(args: argparse.Namespace) -> None:
         )
 
 
+def _argv_has_flag(argv: list[str], flag: str) -> bool:
+    prefix = f"{flag}="
+    for token in argv:
+        if token == flag or token.startswith(prefix):
+            return True
+    return False
+
+
+def _default_params_json_path(task: str, model: str) -> Path:
+    return resolve_path(f"data/oof/binary_v3_{task}_{model}_best_params.json")
+
+
+def _resolve_params_json_path(args: argparse.Namespace) -> Path | None:
+    if str(args.params_json).strip():
+        params_path = resolve_path(str(args.params_json))
+        if not params_path.exists():
+            raise SystemExit(f"params-json not found: {params_path}")
+        return params_path
+
+    default_path = _default_params_json_path(str(args.task), str(args.model))
+    if default_path.exists():
+        return default_path
+    return None
+
+
+def _derive_holdout_input_from_input(input_value: str, *, holdout_year: int) -> str | None:
+    input_path = Path(str(input_value))
+    if input_path.suffix != ".parquet":
+        return None
+    candidate = input_path.with_name(f"{input_path.stem}_{int(holdout_year)}{input_path.suffix}")
+    if resolve_path(str(candidate)).exists():
+        return str(candidate)
+    return None
+
+
+def _params_model_key(model: str) -> str:
+    return f"{model}_params"
+
+
+def _params_final_iterations_key(model: str) -> str:
+    return "final_iterations" if model == "cat" else "final_num_boost_round"
+
+
+def _apply_params_json(
+    args: argparse.Namespace,
+    params: dict[str, Any],
+    *,
+    argv: list[str],
+    params_path: Path,
+) -> None:
+    if not hasattr(args, "_tuned_final_iterations"):
+        args._tuned_final_iterations = None  # type: ignore[attr-defined]
+    if not hasattr(args, "_applied_params_json"):
+        args._applied_params_json = None  # type: ignore[attr-defined]
+    if not hasattr(args, "_applied_params_feature_set"):
+        args._applied_params_feature_set = None  # type: ignore[attr-defined]
+
+    expected_task = str(args.task)
+    expected_model = str(args.model)
+    params_task = params.get("task")
+    params_model = params.get("model")
+    if params_task is not None and str(params_task) != expected_task:
+        raise SystemExit(
+            f"params-json task mismatch: expected={expected_task} actual={params_task}"
+        )
+    if params_model is not None and str(params_model) != expected_model:
+        raise SystemExit(
+            f"params-json model mismatch: expected={expected_model} actual={params_model}"
+        )
+
+    input_was_applied = False
+    if (
+        "input" in params
+        and isinstance(params["input"], str)
+        and not _argv_has_flag(argv, "--input")
+    ):
+        args.input = str(params["input"])
+        input_was_applied = True
+
+    if (
+        input_was_applied
+        and not _argv_has_flag(argv, "--holdout-input")
+        and not str(args.holdout_input).strip()
+    ):
+        derived_holdout = _derive_holdout_input_from_input(
+            str(args.input),
+            holdout_year=int(args.holdout_year),
+        )
+        if derived_holdout is not None:
+            args.holdout_input = derived_holdout
+
+    if "train_window_years" in params and not _argv_has_flag(argv, "--train-window-years"):
+        args.train_window_years = int(params["train_window_years"])
+    if "operational_mode" in params and not _argv_has_flag(argv, "--operational-mode"):
+        args.operational_mode = str(params["operational_mode"])
+    if not _argv_has_flag(argv, "--include-entity-id-features") and not _argv_has_flag(
+        argv, "--drop-entity-id-features"
+    ):
+        if "include_entity_id_features" in params:
+            args.include_entity_id_features = bool(params["include_entity_id_features"])
+            args.drop_entity_id_features = False
+
+    model_params = params.get(_params_model_key(expected_model))
+    if isinstance(model_params, dict):
+        for key, flag in MODEL_PARAM_CLI_FLAGS[expected_model].items():
+            if key in model_params and not _argv_has_flag(argv, flag):
+                setattr(args, key, model_params[key])
+
+    if not _argv_has_flag(argv, "--num-boost-round"):
+        tuned_final_iterations = params.get(_params_final_iterations_key(expected_model))
+        if tuned_final_iterations is not None:
+            args._tuned_final_iterations = int(tuned_final_iterations)  # type: ignore[attr-defined]
+
+    feature_set_value = params.get("feature_set")
+    args._applied_params_json = str(params_path)  # type: ignore[attr-defined]
+    args._applied_params_feature_set = (  # type: ignore[attr-defined]
+        None if feature_set_value is None else str(feature_set_value)
+    )
+
+
 def _include_entity_id_features(args: argparse.Namespace) -> bool:
     if bool(args.drop_entity_id_features):
         logger.warning(
@@ -184,6 +361,46 @@ def _include_entity_id_features(args: argparse.Namespace) -> bool:
         )
         return False
     return bool(args.include_entity_id_features)
+
+
+def _infer_feature_set_from_input_path(input_path: Path | str) -> str:
+    basename = Path(str(input_path)).name.lower()
+    return "te" if "_te" in basename else "base"
+
+
+def _resolve_binary_feature_columns(
+    *,
+    frame: pd.DataFrame,
+    input_path: Path | str,
+    include_entity_id_features: bool,
+    operational_mode: str,
+    feature_set_override: str | None = None,
+) -> tuple[list[str], list[str], bool]:
+    feature_set = (
+        str(feature_set_override)
+        if feature_set_override is not None
+        else _infer_feature_set_from_input_path(input_path)
+    )
+    feat_cols = get_binary_feature_columns(
+        frame,
+        include_entity_ids=include_entity_id_features,
+        operational_mode=str(operational_mode),
+        include_te_features=feature_set == "te",
+    )
+    if not feat_cols:
+        raise SystemExit("No feature columns available")
+    validate_feature_contract(
+        feat_cols,
+        operational_mode=str(operational_mode),
+        stage="binary",
+    )
+    categorical_cols = (
+        [c for c in BINARY_ENTITY_ID_FEATURES if c in feat_cols]
+        if include_entity_id_features
+        else []
+    )
+    forbidden_feature_check_passed = True
+    return feat_cols, categorical_cols, forbidden_feature_check_passed
 
 
 def _resolve_output_paths(args: argparse.Namespace) -> dict[str, Path]:
@@ -235,7 +452,8 @@ def _lgbm_fit_predict(
         subsample=float(args.bagging_fraction),
         subsample_freq=int(args.bagging_freq),
         random_state=int(seed),
-        n_jobs=-1,
+        n_jobs=_model_thread_count(),
+        verbosity=-1,
     )
     model.fit(
         x_train,
@@ -299,7 +517,7 @@ def _xgb_fit_predict(
         tree_method="hist",
         random_state=int(seed),
         early_stopping_rounds=int(args.early_stopping_rounds),
-        n_jobs=-1,
+        n_jobs=_model_thread_count(),
         verbosity=0,
     )
     model.fit(x_train, y_train, eval_set=[(x_valid, y_valid)], verbose=False)
@@ -342,7 +560,7 @@ def _cat_fit_predict(
         allow_writing_files=False,
         od_type="Iter",
         od_wait=int(args.early_stopping_rounds),
-        thread_count=-1,
+        thread_count=_model_thread_count(),
         verbose=False,
     )
     model.fit(train_pool, eval_set=valid_pool, use_best_model=True)
@@ -423,7 +641,8 @@ def _fit_final_model(
             subsample=float(args.bagging_fraction),
             subsample_freq=int(args.bagging_freq),
             random_state=int(seed),
-            n_jobs=-1,
+            n_jobs=_model_thread_count(),
+            verbosity=-1,
         )
         model.fit(x_train, y_train, categorical_feature=categorical_cols or "auto")
         return model
@@ -445,7 +664,7 @@ def _fit_final_model(
             eval_metric="logloss",
             tree_method="hist",
             random_state=int(seed),
-            n_jobs=-1,
+            n_jobs=_model_thread_count(),
             verbosity=0,
         )
         model.fit(x_train, y_train, verbose=False)
@@ -469,7 +688,7 @@ def _fit_final_model(
             leaf_estimation_iterations=int(args.leaf_estimation_iterations),
             random_seed=int(seed),
             allow_writing_files=False,
-            thread_count=-1,
+            thread_count=_model_thread_count(),
             verbose=False,
         )
         model.fit(train_pool)
@@ -604,6 +823,116 @@ def _add_benter_for_fold(
     return benter_payload, extra_cols
 
 
+def _evaluate_cv_fold(
+    *,
+    frame: pd.DataFrame,
+    fold,
+    feat_cols: list[str],
+    categorical_cols: list[str],
+    label_col: str,
+    pred_col: str,
+    args: argparse.Namespace,
+    emit_oof: bool,
+) -> tuple[dict[str, Any], pd.DataFrame | None]:
+    train_df = frame[frame["year"].isin(fold.train_years)].copy()
+    valid_df = frame[frame["year"] == fold.valid_year].copy()
+    if train_df.empty or valid_df.empty:
+        raise SystemExit(
+            f"fold={fold.fold_id} empty split: train={len(train_df)} valid={len(valid_df)}"
+        )
+    fold_integrity(train_df, valid_df, fold.valid_year)
+
+    train_df = train_df.sort_values(["race_id", "horse_no"], kind="mergesort").reset_index(
+        drop=True
+    )
+    valid_df = valid_df.sort_values(["race_id", "horse_no"], kind="mergesort").reset_index(
+        drop=True
+    )
+
+    x_train = coerce_feature_matrix(train_df, feat_cols)
+    y_train = train_df[label_col].astype(int)
+    x_valid = coerce_feature_matrix(valid_df, feat_cols)
+    y_valid = valid_df[label_col].astype(int)
+
+    _, p_train, p_valid, best_iteration = _fit_predict_fold(
+        model_name=str(args.model),
+        x_train=x_train,
+        y_train=y_train,
+        x_valid=x_valid,
+        y_valid=y_valid,
+        args=args,
+        seed=int(args.seed) + int(fold.fold_id),
+        categorical_cols=categorical_cols,
+    )
+
+    metrics = compute_binary_metrics(
+        y_valid.to_numpy(dtype=int),
+        p_valid,
+        n_bins=int(args.n_bins),
+    )
+    window_definition = make_window_definition(int(args.train_window_years))
+    fold_metric: dict[str, Any] = {
+        "fold_id": int(fold.fold_id),
+        "train_years": list(map(int, fold.train_years)),
+        "valid_year": int(fold.valid_year),
+        "train_rows": int(len(train_df)),
+        "valid_rows": int(len(valid_df)),
+        "train_races": int(train_df["race_id"].nunique()),
+        "valid_races": int(valid_df["race_id"].nunique()),
+        "best_iteration": int(best_iteration),
+        "logloss": metrics["logloss"],
+        "brier": metrics["brier"],
+        "auc": metrics["auc"],
+        "ece": metrics["ece"],
+        "base_rate": metrics["base_rate"],
+        "reliability": metrics["reliability"],
+        "cv_window_policy": DEFAULT_CV_WINDOW_POLICY,
+        "train_window_years": int(args.train_window_years),
+        "holdout_year": int(args.holdout_year),
+        "window_definition": window_definition,
+    }
+
+    oof: pd.DataFrame | None = None
+    if emit_oof:
+        oof = build_oof_frame(
+            valid_df,
+            label_col=label_col,
+            pred_col=pred_col,
+            pred_values=p_valid,
+            fold_id=int(fold.fold_id),
+            valid_year=int(fold.valid_year),
+            train_window_years=int(args.train_window_years),
+            holdout_year=int(args.holdout_year),
+            cv_window_policy=DEFAULT_CV_WINDOW_POLICY,
+            window_definition=window_definition,
+        )
+
+    if str(args.task) == "win":
+        benter_payload, extra_cols = _add_benter_for_fold(
+            train_df=train_df,
+            valid_df=valid_df,
+            p_train=p_train,
+            p_valid=p_valid,
+            pred_col=pred_col,
+            args=args,
+        )
+        fold_metric["benter"] = benter_payload
+        if oof is not None:
+            for col_name, values in extra_cols.items():
+                oof[col_name] = values
+
+    logger.info(
+        "fold=%s valid_year=%s logloss=%s brier=%.6f auc=%s ece=%.6f",
+        fold.fold_id,
+        fold.valid_year,
+        (f"{metrics['logloss']:.6f}" if metrics["logloss"] is not None else "None"),
+        float(metrics["brier"]),
+        (f"{metrics['auc']:.6f}" if metrics["auc"] is not None else "None"),
+        float(metrics["ece"]),
+    )
+    return fold_metric, oof
+
+
 def _run_cv_loop(
     *,
     frame: pd.DataFrame,
@@ -618,104 +947,23 @@ def _run_cv_loop(
     oof_list: list[pd.DataFrame] = []
     fold_metrics: list[dict[str, Any]] = []
     best_iterations: list[int] = []
-    window_definition = make_window_definition(int(args.train_window_years))
 
     for fold in folds:
-        train_df = frame[frame["year"].isin(fold.train_years)].copy()
-        valid_df = frame[frame["year"] == fold.valid_year].copy()
-        if train_df.empty or valid_df.empty:
-            raise SystemExit(
-                f"fold={fold.fold_id} empty split: train={len(train_df)} valid={len(valid_df)}"
-            )
-        fold_integrity(train_df, valid_df, fold.valid_year)
-
-        train_df = train_df.sort_values(["race_id", "horse_no"], kind="mergesort").reset_index(
-            drop=True
-        )
-        valid_df = valid_df.sort_values(["race_id", "horse_no"], kind="mergesort").reset_index(
-            drop=True
-        )
-
-        x_train = coerce_feature_matrix(train_df, feat_cols)
-        y_train = train_df[label_col].astype(int)
-        x_valid = coerce_feature_matrix(valid_df, feat_cols)
-        y_valid = valid_df[label_col].astype(int)
-
-        model, p_train, p_valid, best_iteration = _fit_predict_fold(
-            model_name=str(args.model),
-            x_train=x_train,
-            y_train=y_train,
-            x_valid=x_valid,
-            y_valid=y_valid,
-            args=args,
-            seed=int(args.seed) + int(fold.fold_id),
+        fold_metric, oof = _evaluate_cv_fold(
+            frame=frame,
+            fold=fold,
+            feat_cols=feat_cols,
             categorical_cols=categorical_cols,
-        )
-        best_iterations.append(int(best_iteration))
-
-        metrics = compute_binary_metrics(
-            y_valid.to_numpy(dtype=int),
-            p_valid,
-            n_bins=int(args.n_bins),
-        )
-        fold_metric = {
-            "fold_id": int(fold.fold_id),
-            "train_years": list(map(int, fold.train_years)),
-            "valid_year": int(fold.valid_year),
-            "train_rows": int(len(train_df)),
-            "valid_rows": int(len(valid_df)),
-            "train_races": int(train_df["race_id"].nunique()),
-            "valid_races": int(valid_df["race_id"].nunique()),
-            "best_iteration": int(best_iteration),
-            "logloss": metrics["logloss"],
-            "brier": metrics["brier"],
-            "auc": metrics["auc"],
-            "ece": metrics["ece"],
-            "base_rate": metrics["base_rate"],
-            "reliability": metrics["reliability"],
-            "cv_window_policy": DEFAULT_CV_WINDOW_POLICY,
-            "train_window_years": int(args.train_window_years),
-            "holdout_year": int(args.holdout_year),
-            "window_definition": window_definition,
-        }
-
-        oof = build_oof_frame(
-            valid_df,
             label_col=label_col,
             pred_col=pred_col,
-            pred_values=p_valid,
-            fold_id=int(fold.fold_id),
-            valid_year=int(fold.valid_year),
-            train_window_years=int(args.train_window_years),
-            holdout_year=int(args.holdout_year),
-            cv_window_policy=DEFAULT_CV_WINDOW_POLICY,
-            window_definition=window_definition,
+            args=args,
+            emit_oof=True,
         )
-
-        if str(args.task) == "win":
-            benter_payload, extra_cols = _add_benter_for_fold(
-                train_df=train_df,
-                valid_df=valid_df,
-                p_train=p_train,
-                p_valid=p_valid,
-                pred_col=pred_col,
-                args=args,
-            )
-            fold_metric["benter"] = benter_payload
-            for col_name, values in extra_cols.items():
-                oof[col_name] = values
-
+        best_iterations.append(int(fold_metric["best_iteration"]))
+        if oof is None:
+            raise SystemExit("emit_oof=True but no OOF predictions were generated")
         oof_list.append(oof)
         fold_metrics.append(fold_metric)
-        logger.info(
-            "fold=%s valid_year=%s logloss=%s brier=%.6f auc=%s ece=%.6f",
-            fold.fold_id,
-            fold.valid_year,
-            (f"{metrics['logloss']:.6f}" if metrics["logloss"] is not None else "None"),
-            float(metrics["brier"]),
-            (f"{metrics['auc']:.6f}" if metrics["auc"] is not None else "None"),
-            float(metrics["ece"]),
-        )
 
     if not oof_list:
         raise SystemExit("No OOF predictions generated")
@@ -839,6 +1087,8 @@ def _build_metrics_payload(
     holdout_races: int,
     years: list[int],
     final_iterations: int,
+    cv_best_iteration_median: int,
+    final_iteration_source: str,
     args: argparse.Namespace,
     label_col: str,
     pred_col: str,
@@ -873,6 +1123,9 @@ def _build_metrics_payload(
             "n_bins": int(args.n_bins),
             "operational_mode": str(args.operational_mode),
             "include_entity_id_features": bool(include_entity_id_features),
+            "params_json": getattr(args, "_applied_params_json", None),
+            "params_json_feature_set": getattr(args, "_applied_params_feature_set", None),
+            "final_iteration_source": final_iteration_source,
         },
         "data_summary": {
             "rows": int(len(frame)),
@@ -890,7 +1143,8 @@ def _build_metrics_payload(
             "brier": brier_stats,
             "auc": auc_stats,
             "ece": ece_stats,
-            "best_iteration_median": int(final_iterations),
+            "best_iteration_median": int(cv_best_iteration_median),
+            "final_iterations": int(final_iterations),
         },
     }
 
@@ -955,6 +1209,10 @@ def _build_meta_payload(
             "feature_manifest": str(outputs["feature_manifest"]),
             "holdout": str(outputs["holdout"]),
         },
+        "tuned_defaults": {
+            "params_json": getattr(args, "_applied_params_json", None),
+            "feature_set": getattr(args, "_applied_params_feature_set", None),
+        },
         "cv_summary": metrics_summary,
         "final_train_summary": {
             "main_model_years": recent_years,
@@ -979,8 +1237,26 @@ def main(
     default_task: str | None = None,
     default_model: str | None = None,
 ) -> int:
-    args = parse_args(argv, default_task=default_task, default_model=default_model)
+    argv_list = list(sys.argv[1:] if argv is None else argv)
+    args = parse_args(argv_list, default_task=default_task, default_model=default_model)
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO))
+
+    args._tuned_final_iterations = None  # type: ignore[attr-defined]
+    args._applied_params_json = None  # type: ignore[attr-defined]
+    args._applied_params_feature_set = None  # type: ignore[attr-defined]
+    params_path = _resolve_params_json_path(args)
+    if params_path is not None:
+        params = json.loads(params_path.read_text(encoding="utf-8"))
+        if not isinstance(params, dict):
+            raise SystemExit("params-json must be a JSON object.")
+        _apply_params_json(args, params, argv=argv_list, params_path=params_path)
+        logger.info(
+            "applied params-json=%s feature_set=%s input=%s",
+            params_path,
+            getattr(args, "_applied_params_feature_set", None),
+            args.input,
+        )
+
     _validate_args(args)
 
     label_col = _label_col(str(args.task))
@@ -1012,23 +1288,11 @@ def main(
         )
 
     include_entity_id_features = _include_entity_id_features(args)
-    feat_cols = get_binary_feature_columns(
-        frame,
-        include_entity_ids=include_entity_id_features,
+    feat_cols, categorical_cols, forbidden_feature_check_passed = _resolve_binary_feature_columns(
+        frame=frame,
+        input_path=input_path,
+        include_entity_id_features=include_entity_id_features,
         operational_mode=str(args.operational_mode),
-    )
-    if not feat_cols:
-        raise SystemExit("No feature columns available")
-    validate_feature_contract(
-        feat_cols,
-        operational_mode=str(args.operational_mode),
-        stage="binary",
-    )
-    forbidden_feature_check_passed = True
-    categorical_cols = (
-        [c for c in BINARY_ENTITY_ID_FEATURES if c in feat_cols]
-        if include_entity_id_features
-        else []
     )
 
     logger.info(
@@ -1054,8 +1318,14 @@ def main(
     )
 
     # --- 最終モデル学習 ---
-    final_iterations = int(np.median(best_iterations))
-    final_iterations = max(1, min(final_iterations, int(args.num_boost_round)))
+    cv_best_iteration_median = int(np.median(best_iterations))
+    cv_best_iteration_median = max(1, min(cv_best_iteration_median, int(args.num_boost_round)))
+    final_iterations = cv_best_iteration_median
+    final_iteration_source = "cv_best_iteration_median"
+    tuned_final_iterations = getattr(args, "_tuned_final_iterations", None)
+    if tuned_final_iterations is not None:
+        final_iterations = max(1, min(int(tuned_final_iterations), int(args.num_boost_round)))
+        final_iteration_source = "params_json"
 
     main_model, all_model, recent_df, all_df = _train_final_models(
         frame=frame,
@@ -1095,6 +1365,8 @@ def main(
         holdout_races=holdout_races,
         years=years,
         final_iterations=final_iterations,
+        cv_best_iteration_median=cv_best_iteration_median,
+        final_iteration_source=final_iteration_source,
         args=args,
         label_col=label_col,
         pred_col=pred_col,

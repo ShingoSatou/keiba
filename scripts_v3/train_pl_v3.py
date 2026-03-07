@@ -58,9 +58,7 @@ DEFAULT_MC_SAMPLES = 10_000
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Train v3 PL(uなし) ranking layer from stacker/meta/raw OOF predictions."
-        )
+        description=("Train v3 PL(uなし) ranking layer from stacker/meta/raw OOF predictions.")
     )
     parser.add_argument("--features-input", default="data/features_v3.parquet")
     parser.add_argument("--holdout-input", default="")

@@ -19,6 +19,10 @@ def test_train_binary_model_help() -> None:
     run_cli_help("train_binary_model_v3.py")
 
 
+def test_tune_binary_optuna_help() -> None:
+    run_cli_help("tune_binary_optuna_v3.py")
+
+
 def test_train_pl_help() -> None:
     run_cli_help("train_pl_v3.py")
 

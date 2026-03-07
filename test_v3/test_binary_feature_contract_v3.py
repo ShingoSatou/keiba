@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -13,8 +14,10 @@ from scripts_v3.feature_registry_v3 import (
     get_binary_feature_columns,
 )
 from scripts_v3.train_binary_model_v3 import (
+    _apply_params_json,
     _build_feature_manifest_payload,
     _build_meta_payload,
+    _resolve_binary_feature_columns,
     parse_args,
 )
 
@@ -70,6 +73,10 @@ def _sample_frame() -> pd.DataFrame:
                 "rel_carried_weight_z": -0.3,
                 "rel_jockey_top3_rate_z": 0.4,
                 "rel_meta_tm_score_z": 0.7,
+                "jockey_target_label_mean_6m": 1.8,
+                "trainer_target_label_mean_6m": 1.6,
+                "rel_jockey_target_label_mean_z": 0.25,
+                "te_window_time": 123,
                 "odds_win_t10": 4.5,
                 "odds_t10_data_kbn": 3,
                 "p_win_odds_t10_raw": 0.22,
@@ -88,6 +95,7 @@ def _sample_frame() -> pd.DataFrame:
                 "y_top3": 1,
                 "pl_score": 0.1,
                 "p_top3": 0.4,
+                "p_win_stack": 0.33,
                 "fold_id": 0,
                 "valid_year": 2025,
             }
@@ -116,6 +124,35 @@ def test_binary_can_opt_in_entity_id_features() -> None:
 
     assert "jockey_key" in feat_cols
     assert "trainer_key" in feat_cols
+
+
+def test_binary_te_input_includes_safe_te_columns_only() -> None:
+    frame = _sample_frame()
+
+    base_feat_cols, _, _ = _resolve_binary_feature_columns(
+        frame=frame,
+        input_path=Path("data/features_v3.parquet"),
+        include_entity_id_features=False,
+        operational_mode="t10_only",
+    )
+    te_feat_cols, _, _ = _resolve_binary_feature_columns(
+        frame=frame,
+        input_path=Path("data/features_v3_te.parquet"),
+        include_entity_id_features=False,
+        operational_mode="t10_only",
+    )
+
+    te_only_cols = {
+        "jockey_target_label_mean_6m",
+        "trainer_target_label_mean_6m",
+        "rel_jockey_target_label_mean_z",
+    }
+    assert all(col not in base_feat_cols for col in te_only_cols)
+    assert all(col in te_feat_cols for col in te_only_cols)
+    assert "te_window_time" not in te_feat_cols
+    assert "p_win_stack" not in te_feat_cols
+    assert all(col not in te_feat_cols for col in FORBIDDEN_FINAL_ODDS_FEATURES)
+    assert all(col not in te_feat_cols for col in BINARY_ENTITY_ID_FEATURES)
 
 
 def test_binary_manifest_and_meta_include_feature_contract_fields() -> None:
@@ -172,3 +209,111 @@ def test_binary_manifest_and_meta_include_feature_contract_fields() -> None:
         assert payload["feature_manifest_version"] == FEATURE_MANIFEST_VERSION
 
     assert args.train_window_years == 4
+
+
+def test_apply_params_json_uses_tuned_input_and_holdout_defaults(tmp_path: Path) -> None:
+    train_input = tmp_path / "features_v3_te.parquet"
+    holdout_input = tmp_path / "features_v3_te_2025.parquet"
+    params_path = tmp_path / "binary_v3_win_lgbm_best_params.json"
+    train_input.write_bytes(b"parquet")
+    holdout_input.write_bytes(b"parquet")
+    params_path.write_text("{}", encoding="utf-8")
+
+    args = parse_args(["--task", "win", "--model", "lgbm"])
+    params = {
+        "task": "win",
+        "model": "lgbm",
+        "input": str(train_input),
+        "feature_set": "te",
+        "train_window_years": 4,
+        "operational_mode": "t10_only",
+        "include_entity_id_features": False,
+        "lgbm_params": {
+            "learning_rate": 0.031,
+            "num_leaves": 111,
+            "min_data_in_leaf": 44,
+            "lambda_l1": 0.12,
+            "lambda_l2": 1.5,
+            "feature_fraction": 0.88,
+            "bagging_fraction": 0.77,
+            "bagging_freq": 5,
+        },
+        "final_num_boost_round": 137,
+    }
+
+    _apply_params_json(args, params, argv=[], params_path=params_path)
+
+    assert args.input == str(train_input)
+    assert args.holdout_input == str(holdout_input)
+    assert args.learning_rate == 0.031
+    assert args.num_leaves == 111
+    assert args.min_data_in_leaf == 44
+    assert args._tuned_final_iterations == 137
+    assert args._applied_params_json == str(params_path)
+    assert args._applied_params_feature_set == "te"
+
+
+def test_apply_params_json_preserves_explicit_cli_overrides(tmp_path: Path) -> None:
+    train_input = tmp_path / "features_v3_te.parquet"
+    holdout_input = tmp_path / "features_v3_te_2025.parquet"
+    params_path = tmp_path / "binary_v3_win_lgbm_best_params.json"
+    train_input.write_bytes(b"parquet")
+    holdout_input.write_bytes(b"parquet")
+    params_path.write_text(json.dumps({"ok": True}), encoding="utf-8")
+
+    argv = [
+        "--task",
+        "win",
+        "--model",
+        "lgbm",
+        "--input",
+        "data/features_v3.parquet",
+        "--learning-rate",
+        "0.2",
+        "--num-boost-round",
+        "123",
+    ]
+    args = parse_args(argv)
+    params = {
+        "task": "win",
+        "model": "lgbm",
+        "input": str(train_input),
+        "feature_set": "te",
+        "lgbm_params": {
+            "learning_rate": 0.031,
+            "num_leaves": 111,
+            "min_data_in_leaf": 44,
+            "lambda_l1": 0.12,
+            "lambda_l2": 1.5,
+            "feature_fraction": 0.88,
+            "bagging_fraction": 0.77,
+            "bagging_freq": 5,
+        },
+        "final_num_boost_round": 137,
+    }
+
+    _apply_params_json(args, params, argv=argv, params_path=params_path)
+
+    assert args.input == "data/features_v3.parquet"
+    assert args.holdout_input == ""
+    assert args.learning_rate == 0.2
+    assert args.num_leaves == 111
+    assert args._tuned_final_iterations is None
+
+
+def test_apply_params_json_rejects_task_model_mismatch(tmp_path: Path) -> None:
+    params_path = tmp_path / "binary_v3_win_lgbm_best_params.json"
+    params_path.write_text("{}", encoding="utf-8")
+    args = parse_args(["--task", "win", "--model", "lgbm"])
+
+    try:
+        _apply_params_json(
+            args,
+            {"task": "place", "model": "lgbm"},
+            argv=[],
+            params_path=params_path,
+        )
+    except SystemExit as exc:
+        assert "task mismatch" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("SystemExit not raised for mismatched params-json task")
